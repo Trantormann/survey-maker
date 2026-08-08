@@ -265,8 +265,8 @@ _CONFIRM_BUTTON_SELECTORS = [
 
 _CONFIRM_TEXTS = ("确认提交", "确定提交", "确认", "确定")
 _SUCCESS_TEXTS = ("答卷成功", "问卷已提交", "提交成功", "已完成答题", "感谢您的填写")
+_RESULT_URL_PATTERNS = ("/wjx/result/", "/result/", "completemobile2.aspx", "resultquery.aspx")
 _ERROR_SELECTORS = [
-    ".errorMessage",
     ".error_tip",
     "#ErrorMessage",
     ".layui-layer-content .error",
@@ -299,17 +299,13 @@ def _submit_form(page: Page) -> None:
 
     submit_btn.click()
 
-    # 等待弹窗渲染后处理确认按钮
+    # 等待可能的确认弹窗（非 WJX 平台）
     time.sleep(0.5)
     _try_click_confirm(page)
 
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=30_000)
-    except PlaywrightError:
-        pass
+    # 问卷星通过 AJAX 提交，成功后会将文本写入 #ValError，然后 1.5 秒后跳转。
+    _wait_for_submit_result(page)
 
-    # 给结果页面一点渲染时间
-    time.sleep(1)
     _check_result(page, previous_body_text=previous_body_text)
 
 
@@ -368,6 +364,32 @@ def _first_visible(candidates: Locator) -> Locator | None:
     return None
 
 
+def _wait_for_submit_result(page: Page) -> None:
+    """等待 AJAX 提交完成：#ValError 出现文本或页面开始跳转。"""
+    try:
+        page.wait_for_function(
+            """() => {
+                const valError = document.getElementById('ValError');
+                if (valError && valError.textContent.trim()) return true;
+                const captchaTit = document.getElementById('captchaTit');
+                if (captchaTit && captchaTit.textContent.trim()) return true;
+                return false;
+            }""",
+            timeout=15_000,
+        )
+    except PlaywrightError:
+        pass
+
+    # 给页面跳转额外时间（问卷星成功后 1.5 秒才跳转）
+    try:
+        page.wait_for_url(
+            lambda url: any(pattern in url for pattern in _RESULT_URL_PATTERNS),
+            timeout=5_000,
+        )
+    except PlaywrightError:
+        pass
+
+
 def _try_click_confirm(page: Page) -> None:
     """处理问卷星可能出现的页面内确认弹窗（非原生 dialog）。"""
     # 先尝试 CSS class 选择器（精确匹配弹窗按钮）
@@ -422,7 +444,7 @@ def _check_result(
 
     # 通过 URL 判断：成功后通常会跳转到 wjx.cn 的结果页或带参数的感谢页
     current_url = page.url
-    if "/wjx/result/" in current_url or "/result/" in current_url:
+    if any(pattern in current_url for pattern in _RESULT_URL_PATTERNS):
         return
     if "wjx.cn" not in current_url and "wjx.top" not in current_url:
         raise BrowserPreparationError(f"提交后页面跳转至非预期地址：{current_url}")

@@ -191,29 +191,29 @@ class BrowserFillTests(unittest.TestCase):
             """
             <button id="submit_button" type="button" onclick="document.getElementById('confirm').hidden = false">提交</button>
             <div id="confirm" hidden>
-              <button class="layui-layer-btn0" type="button" onclick="document.getElementById('result').textContent = '提交成功'">确认提交</button>
+              <button class="layui-layer-btn0" type="button" onclick="document.getElementById('ValError').textContent = '提交成功'">确认提交</button>
             </div>
-            <p id="result"></p>
+            <div id="ValError"></div>
             """
         )
 
-        with patch("survey_maker.browser.time.sleep"):
+        with patch("survey_maker.browser.time.sleep"), patch("survey_maker.browser._wait_for_submit_result"):
             _submit_form(self.page)
 
-        self.assertEqual(self.page.locator("#result").inner_text(), "提交成功")
+        self.assertIn("提交成功", self.page.locator("#ValError").inner_text())
 
     def test_submit_handles_wjx_ctl_next_div(self) -> None:
         self.page.set_content(
             """
-            <div id="ctlNext" class="submitbtn" onclick="document.getElementById('result').textContent = '提交成功'">提交</div>
-            <p id="result"></p>
+            <div id="ctlNext" class="submitbtn" onclick="document.getElementById('ValError').textContent = '提交成功'">提交</div>
+            <div id="ValError"></div>
             """
         )
 
-        with patch("survey_maker.browser.time.sleep"):
+        with patch("survey_maker.browser.time.sleep"), patch("survey_maker.browser._wait_for_submit_result"):
             _submit_form(self.page)
 
-        self.assertEqual(self.page.locator("#result").inner_text(), "提交成功")
+        self.assertIn("提交成功", self.page.locator("#ValError").inner_text())
 
     def test_result_detection_rejects_captcha_page(self) -> None:
         self.page.set_content("<p>请完成验证码后继续</p>")
