@@ -277,6 +277,8 @@ _TEXT_CONTROL_SELECTOR = (
     "[contenteditable='true']:visible, textarea:visible, "
     "input[type='text']:visible, input:not([type]):visible"
 )
+_WJX_SUBMIT_SELECTOR = "#ctlNext"
+_WJX_SUBMIT_WAIT_MS = 10_000
 
 
 def _submit_form(page: Page) -> None:
@@ -290,33 +292,10 @@ def _submit_form(page: Page) -> None:
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     time.sleep(0.3)
 
-    submit_btn = None
-    for selector in _SUBMIT_SELECTORS:
-        candidate = page.locator(selector)
-        if candidate.count():
-            submit_btn = candidate.first
-            break
+    submit_btn = _find_submit_button(page)
 
     if submit_btn is None:
-        # 尝试通过文本查找提交按钮
-        for text in ("提交", "submit", "Submit", "提交问卷"):
-            try:
-                candidate = page.get_by_role("button", name=text, exact=False)
-                if candidate.count():
-                    submit_btn = candidate.first
-                    break
-            except PlaywrightError:
-                continue
-            try:
-                candidate = page.locator(f"a:has-text('{text}')")
-                if candidate.count():
-                    submit_btn = candidate.first
-                    break
-            except PlaywrightError:
-                continue
-
-    if submit_btn is None:
-        raise BrowserPreparationError("未找到提交按钮。")
+        raise BrowserPreparationError("未找到可见的提交按钮。请确认问卷已加载到最后一页。")
 
     submit_btn.click()
 
@@ -332,6 +311,61 @@ def _submit_form(page: Page) -> None:
     # 给结果页面一点渲染时间
     time.sleep(1)
     _check_result(page, previous_body_text=previous_body_text)
+
+
+def _find_submit_button(page: Page) -> Locator | None:
+    """定位问卷星或通用问卷页面中当前可见的最终提交控件。"""
+    wjx_submit = _first_visible(page.locator(_WJX_SUBMIT_SELECTOR))
+    if wjx_submit is not None and _is_wjx_submit_control(wjx_submit):
+        return wjx_submit
+
+    for selector in _SUBMIT_SELECTORS:
+        candidate = _first_visible(page.locator(selector))
+        if candidate is not None:
+            return candidate
+
+    for text in ("提交", "submit", "Submit", "提交问卷"):
+        try:
+            candidate = _first_visible(page.get_by_role("button", name=text, exact=False))
+            if candidate is not None:
+                return candidate
+        except PlaywrightError:
+            continue
+        try:
+            candidate = _first_visible(page.locator(f"a:has-text('{text}')"))
+            if candidate is not None:
+                return candidate
+        except PlaywrightError:
+            continue
+
+    # 问卷星可能在初始 DOM 加载后才注入 ctlNext，因此只在没有其他候选时等待它。
+    delayed_wjx_submit = page.locator(_WJX_SUBMIT_SELECTOR).first
+    try:
+        delayed_wjx_submit.wait_for(state="visible", timeout=_WJX_SUBMIT_WAIT_MS)
+        if _is_wjx_submit_control(delayed_wjx_submit):
+            return delayed_wjx_submit
+    except PlaywrightError:
+        pass
+    return None
+
+
+def _is_wjx_submit_control(control: Locator) -> bool:
+    try:
+        label = " ".join((control.inner_text() or "").split())
+    except PlaywrightError:
+        return False
+    return "提交" in label or label.casefold() == "submit"
+
+
+def _first_visible(candidates: Locator) -> Locator | None:
+    try:
+        for index in range(candidates.count()):
+            candidate = candidates.nth(index)
+            if candidate.is_visible():
+                return candidate
+    except PlaywrightError:
+        return None
+    return None
 
 
 def _try_click_confirm(page: Page) -> None:
@@ -353,7 +387,7 @@ def _try_click_confirm(page: Page) -> None:
             ("a", page.locator(f"a:has-text('{text}')[role='button']")),
         ]
         for _, elements in candidates:
-            if elements.count() <= 2:  # 限制匹配数量，避免误匹配
+            if 0 < elements.count() <= 2:  # 限制匹配数量，避免误匹配
                 try:
                     elements.first.click(timeout=3_000)
                     return

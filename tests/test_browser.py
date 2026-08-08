@@ -202,6 +202,19 @@ class BrowserFillTests(unittest.TestCase):
 
         self.assertEqual(self.page.locator("#result").inner_text(), "提交成功")
 
+    def test_submit_handles_wjx_ctl_next_div(self) -> None:
+        self.page.set_content(
+            """
+            <div id="ctlNext" class="submitbtn" onclick="document.getElementById('result').textContent = '提交成功'">提交</div>
+            <p id="result"></p>
+            """
+        )
+
+        with patch("survey_maker.browser.time.sleep"):
+            _submit_form(self.page)
+
+        self.assertEqual(self.page.locator("#result").inner_text(), "提交成功")
+
     def test_result_detection_rejects_captcha_page(self) -> None:
         self.page.set_content("<p>请完成验证码后继续</p>")
 
