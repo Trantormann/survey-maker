@@ -72,6 +72,7 @@ class SubmitCommandTests(unittest.TestCase):
             rows=[5],
             headless=False,
             delay=3.0,
+            jitter=0.0,
         )
         with (
             patch.object(main, "_load_questions", return_value=[]),
@@ -89,6 +90,7 @@ class SubmitCommandTests(unittest.TestCase):
             [row_five],
             headless=False,
             delay=3.0,
+            jitter=0.0,
             progress_callback=main._print_submit_progress,
         )
 
@@ -102,6 +104,7 @@ class SubmitCommandTests(unittest.TestCase):
             rows=None,
             headless=True,
             delay=0.0,
+            jitter=0.0,
         )
         with (
             patch.object(main, "_load_questions", return_value=[]),
@@ -122,6 +125,7 @@ class SubmitCommandTests(unittest.TestCase):
             [row_two, row_five],
             headless=True,
             delay=0.0,
+            jitter=0.0,
             progress_callback=main._print_submit_progress,
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+import random
 import time
 from typing import Callable, Iterator, Sequence
 
@@ -81,9 +82,14 @@ def batch_submit(
     *,
     headless: bool = True,
     delay: float = 2.0,
+    jitter: float = 0.0,
     progress_callback: ProgressCallback | None = None,
 ) -> list[SubmitResult]:
-    """对 Excel 中每一行答案依次打开问卷、填写并自动提交。"""
+    """对 Excel 中每一行答案依次打开问卷、填写并自动提交。
+
+    delay 为基础间隔秒数；jitter 为附加随机抖动上限（秒），
+    实际等待 = delay + random.uniform(0, jitter)，使提交节奏更接近真人。
+    """
     if not answer_rows:
         raise BrowserPreparationError("没有可提交的答案行。")
 
@@ -135,15 +141,16 @@ def batch_submit(
                     )
                     break
                 if index < total and delay > 0:
+                    wait = delay + (random.uniform(0, jitter) if jitter > 0 else 0)
                     _report_progress(
                         progress_callback,
                         position=index,
                         total=total,
                         excel_row=answer_row.excel_row,
                         stage="waiting",
-                        message=f"等待 {delay:g} 秒后处理下一行。",
+                        message=f"等待 {wait:.1f} 秒后处理下一行。",
                     )
-                    time.sleep(delay)
+                    time.sleep(wait)
         finally:
             browser.close()
 
