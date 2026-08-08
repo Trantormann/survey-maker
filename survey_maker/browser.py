@@ -9,7 +9,7 @@ import time
 from typing import Iterator, Sequence
 
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Locator, Page, sync_playwright
 
 from .excel import AnswerRow
 from .wjx import Choice, Question, QuestionType
@@ -87,6 +87,8 @@ def batch_submit(
             for index, answer_row in enumerate(answer_rows):
                 result = _submit_single(browser, url, answer_row)
                 results.append(result)
+                if _should_stop_batch(result):
+                    break
                 if index < len(answer_rows) - 1 and delay > 0:
                     time.sleep(delay)
         finally:
@@ -95,11 +97,16 @@ def batch_submit(
     return results
 
 
+def _should_stop_batch(result: SubmitResult) -> bool:
+    return not result.success and any(hint in result.message for hint in _STOP_BATCH_HINTS)
+
+
 def _submit_single(browser, url: str, answer_row: AnswerRow) -> SubmitResult:
     """提交单行答案，返回结果记录。"""
-    context = browser.new_context()
-    page = context.new_page()
+    context = None
     try:
+        context = browser.new_context()
+        page = context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         _fill_answer_row(page, answer_row)
         _submit_form(page)
@@ -115,7 +122,11 @@ def _submit_single(browser, url: str, answer_row: AnswerRow) -> SubmitResult:
             message=str(error),
         )
     finally:
-        context.close()
+        if context is not None:
+            try:
+                context.close()
+            except PlaywrightError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -149,10 +160,13 @@ _ERROR_SELECTORS = [
     ".layui-layer-content .error",
 ]
 _CAPTCHA_HINTS = ("验证码", "滑动", "请拖动", "安全验证", "滑块")
+_STOP_BATCH_HINTS = (*_CAPTCHA_HINTS, "访问过于频繁", "操作过于频繁", "提交过于频繁", "请稍后")
 
 
 def _submit_form(page: Page) -> None:
     """点击提交按钮，处理确认对话框，并等待结果页面。"""
+    previous_body_text = _body_text(page)
+
     # 先注册 dialog 拦截（问卷星可能弹出原生 confirm）
     page.on("dialog", lambda dialog: dialog.accept())
 
@@ -201,7 +215,7 @@ def _submit_form(page: Page) -> None:
 
     # 给结果页面一点渲染时间
     time.sleep(1)
-    _check_result(page)
+    _check_result(page, previous_body_text=previous_body_text)
 
 
 def _try_click_confirm(page: Page) -> None:
@@ -231,13 +245,20 @@ def _try_click_confirm(page: Page) -> None:
                     continue
 
 
-def _check_result(page: Page) -> None:
-    """检查提交后页面是否出现成功标记或错误标记。"""
-    body_text = ""
+def _body_text(page: Page) -> str:
     try:
-        body_text = page.locator("body").inner_text(timeout=8_000)
+        return page.locator("body").inner_text(timeout=8_000)
     except PlaywrightError:
-        pass
+        return ""
+
+
+def _check_result(
+    page: Page,
+    *,
+    previous_body_text: str = "",
+) -> None:
+    """检查提交后页面是否出现成功标记或错误标记。"""
+    body_text = _body_text(page)
 
     # 检测验证码拦截
     for hint in _CAPTCHA_HINTS:
@@ -246,7 +267,7 @@ def _check_result(page: Page) -> None:
 
     # 检测成功
     for success_text in _SUCCESS_TEXTS:
-        if success_text in body_text:
+        if success_text in body_text and success_text not in previous_body_text:
             return
 
     # 通过 URL 判断：成功后通常会跳转到 wjx.cn 的结果页或带参数的感谢页
@@ -283,13 +304,23 @@ def _fill_answer_row(page: Page, answer_row: AnswerRow) -> None:
 
         field = page.locator(_id_selector(question.field_id))
         field.wait_for(state="attached", timeout=15_000)
-        if question.question_type in {QuestionType.SINGLE_CHOICE, QuestionType.MULTIPLE_CHOICE}:
+        if question.question_type == QuestionType.SINGLE_CHOICE:
             choices_by_value = {choice.value: choice for choice in question.choices}
             for value in answer.choice_values:
                 choice = choices_by_value.get(value)
                 if choice is None:
                     raise BrowserPreparationError(f"Q{question.number} 的答案选项已发生变化。")
-                _click_choice(field, choice)
+                _set_choice_selected(field, choice, selected=True)
+        elif question.question_type == QuestionType.MULTIPLE_CHOICE:
+            selected_values = set(answer.choice_values)
+            known_values = {choice.value for choice in question.choices}
+            unknown_values = selected_values - known_values
+            if unknown_values:
+                raise BrowserPreparationError(
+                    f"Q{question.number} 的答案选项已发生变化：{', '.join(sorted(unknown_values))}。"
+                )
+            for choice in question.choices:
+                _set_choice_selected(field, choice, selected=choice.value in selected_values)
         elif question.question_type == QuestionType.SELECT:
             select = field.locator("select").first
             select.select_option(value=answer.choice_values[0])
@@ -298,15 +329,35 @@ def _fill_answer_row(page: Page, answer_row: AnswerRow) -> None:
             text_box.fill(answer.text)
 
 
-def _click_choice(field: object, choice: Choice) -> None:
+def _set_choice_selected(field: Locator, choice: Choice, *, selected: bool) -> None:
+    """将一个单选或多选控件收敛到指定状态，并确认原生 input 已同步。"""
     input_selector = _id_selector(choice.input_id) if choice.input_id else _value_selector(choice.value)
+    input_control = field.locator(input_selector).first
+    try:
+        input_control.wait_for(state="attached", timeout=15_000)
+        if input_control.is_checked() == selected:
+            return
+    except PlaywrightError as error:
+        raise BrowserPreparationError(f"选项“{choice.label or choice.value}”不可用。") from error
+
     visual_control = field.locator(
         f"{input_selector} + .jqradio, {input_selector} + .jqcheck, {input_selector} + .jqcheckbox"
     )
     if visual_control.count():
-        visual_control.first.click()
-        return
-    field.locator(input_selector).check(force=True)
+        try:
+            visual_control.first.click(timeout=3_000)
+        except PlaywrightError:
+            pass
+
+    try:
+        if input_control.is_checked() != selected:
+            input_control.evaluate("input => input.click()")
+        if input_control.is_checked() != selected:
+            state = "选中" if selected else "取消选中"
+            raise BrowserPreparationError(f"无法{state}选项“{choice.label or choice.value}”。")
+    except PlaywrightError as error:
+        state = "选中" if selected else "取消选中"
+        raise BrowserPreparationError(f"无法{state}选项“{choice.label or choice.value}”。") from error
 
 
 def _id_selector(element_id: str | None) -> str:

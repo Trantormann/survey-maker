@@ -40,6 +40,8 @@ class Question:
     field_id: str
     field_name: str | None
     choices: tuple[Choice, ...] = ()
+    max_choices: int | None = None
+    min_choices: int | None = None
 
 
 @dataclass
@@ -55,6 +57,8 @@ class _QuestionDraft:
     has_select: bool = False
     has_textarea: bool = False
     last_choice_index: int | None = None
+    max_choices: int | None = None
+    min_choices: int | None = None
 
 
 class _QuestionParser(HTMLParser):
@@ -131,6 +135,8 @@ class _QuestionParser(HTMLParser):
             title_parts=[],
             choices=[],
             input_types=set(),
+            max_choices=_positive_int(attributes.get("maxvalue")),
+            min_choices=_positive_int(attributes.get("minvalue")),
         )
 
     def _capture_start(self, tag: str, attributes: dict[str, str]) -> None:
@@ -217,12 +223,22 @@ class _QuestionParser(HTMLParser):
                 field_id=self._active.field_id,
                 field_name=self._active.field_name,
                 choices=tuple(self._active.choices),
+                max_choices=self._active.max_choices,
+                min_choices=self._active.min_choices,
             )
         )
         self._active = None
         self._title_depth = None
         self._label_depth = None
         self._option_depth = None
+
+
+def _positive_int(value: str | None) -> int | None:
+    try:
+        parsed = int(value or "")
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _question_type(draft: _QuestionDraft) -> QuestionType:

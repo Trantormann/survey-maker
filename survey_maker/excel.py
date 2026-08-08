@@ -96,7 +96,12 @@ def create_template(questions: Sequence[Question], output_path: str | Path) -> P
     return path
 
 
-def read_answer_rows(excel_path: str | Path, questions: Sequence[Question]) -> list[AnswerRow]:
+def read_answer_rows(
+    excel_path: str | Path,
+    questions: Sequence[Question],
+    *,
+    allow_manual_questions: bool = False,
+) -> list[AnswerRow]:
     """读取 answers 工作表，并将每个非空行验证为一份问卷答案。"""
     if not questions:
         raise ValueError("未解析到题目，无法读取回答。")
@@ -120,7 +125,12 @@ def read_answer_rows(excel_path: str | Path, questions: Sequence[Question]) -> l
             if any(values[len(questions) :]):
                 raise WorkbookValidationError(f"第 {excel_row} 行存在超出问卷题目数量的非空列。")
             answers = tuple(
-                _parse_answer(question, values[index], excel_row)
+                _parse_answer(
+                    question,
+                    values[index],
+                    excel_row,
+                    allow_manual_questions=allow_manual_questions,
+                )
                 for index, question in enumerate(questions)
             )
             rows.append(AnswerRow(excel_row=excel_row, answers=answers))
@@ -147,7 +157,24 @@ def _validate_headers(worksheet: object, questions: Sequence[Question]) -> None:
         )
 
 
-def _parse_answer(question: Question, value: str, excel_row: int) -> AnswerValue:
+def _parse_answer(
+    question: Question,
+    value: str,
+    excel_row: int,
+    *,
+    allow_manual_questions: bool,
+) -> AnswerValue:
+    if question.question_type == QuestionType.UNSUPPORTED:
+        if value:
+            raise WorkbookValidationError(
+                f"第 {excel_row} 行的 Q{question.number} 是暂不支持的题型，必须留空后手动填写。"
+            )
+        if question.required and not allow_manual_questions:
+            raise WorkbookValidationError(
+                f"第 {excel_row} 行的 Q{question.number} 是必填且暂不支持的题型，不能自动提交。"
+            )
+        return AnswerValue(question=question)
+
     if not value:
         if question.required:
             raise WorkbookValidationError(f"第 {excel_row} 行的 Q{question.number} 是必填题，不能留空。")
@@ -165,15 +192,18 @@ def _parse_answer(question: Question, value: str, excel_row: int) -> AnswerValue
         choices = tuple(_resolve_choice(question, part, excel_row) for part in parts)
         if len(set(choices)) != len(choices):
             raise WorkbookValidationError(f"第 {excel_row} 行的 Q{question.number} 包含重复的多选答案。")
+        if question.max_choices is not None and len(choices) > question.max_choices:
+            raise WorkbookValidationError(
+                f"第 {excel_row} 行的 Q{question.number} 最多只能选择 {question.max_choices} 项。"
+            )
+        if question.min_choices is not None and len(choices) < question.min_choices:
+            raise WorkbookValidationError(
+                f"第 {excel_row} 行的 Q{question.number} 至少需要选择 {question.min_choices} 项。"
+            )
         return AnswerValue(question=question, choice_values=choices)
 
     if question.question_type == QuestionType.TEXT:
         return AnswerValue(question=question, text=value)
-
-    raise WorkbookValidationError(
-        f"第 {excel_row} 行的 Q{question.number} 是暂不支持的题型，必须留空后手动填写。"
-    )
-
 
 def _resolve_choice(question: Question, value: str, excel_row: int) -> str:
     candidate = _normalize(value)
@@ -220,12 +250,18 @@ def _question_type_label(question_type: QuestionType) -> str:
 
 def _entry_rule(question: Question) -> str:
     if question.question_type == QuestionType.MULTIPLE_CHOICE:
-        return "填写选项全文、选项序号或选项值；多个答案以英文或中文分号分隔。"
+        constraints: list[str] = []
+        if question.min_choices is not None:
+            constraints.append(f"至少选择 {question.min_choices} 项")
+        if question.max_choices is not None:
+            constraints.append(f"最多选择 {question.max_choices} 项")
+        suffix = f"；{'，'.join(constraints)}。" if constraints else "。"
+        return "填写选项全文、选项序号或选项值；多个答案以英文或中文分号分隔" + suffix
     if question.question_type in {QuestionType.SINGLE_CHOICE, QuestionType.SELECT}:
         return "填写选项全文、选项序号或选项值。"
     if question.question_type == QuestionType.TEXT:
         return "填写要输入到文本框中的内容。"
-    return "此题型暂不自动填写，请在浏览器中手动完成。"
+    return "此题型不支持自动提交；仅可通过 prepare 打开浏览器后手动完成。"
 
 
 def _question_help(question: Question) -> str:

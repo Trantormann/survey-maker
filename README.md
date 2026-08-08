@@ -2,7 +2,7 @@
 
 将已获授权的问卷星链接解析为 Excel 回答模板，支持人工预填核对或批量自动提交。
 
-仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。工具不会处理验证码或规避平台限流。请在合法授权范围内使用。
+仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。工具不会处理验证码或规避平台限流；检测到验证码或频率/安全拦截后，会停止后续批处理。请在合法授权范围内使用。
 
 ## 安装
 
@@ -17,7 +17,7 @@ python -m playwright install chromium
 |------|------|
 | `inspect` | 解析问卷链接，列出题目和选项 |
 | `template` | 生成 Excel 回答模板（含 answers 和 question_guide 两个工作表）|
-| `validate` | 校验 Excel 中每一行答案是否合法 |
+| `validate` | 严格校验 Excel 中每一行答案是否可自动提交 |
 | `prepare` | 在可见浏览器中预填单行答案，等待人工核对（不自动提交）|
 | `submit` | 批量自动提交 Excel 中的答案行 |
 
@@ -41,7 +41,7 @@ python main.py template --url "https://v.wjx.cn/vm/your-form.aspx" --output "ans
 python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx"
 ```
 
-校验通过后可继续用 `prepare` 或 `submit`。
+`validate` 采用自动提交的严格规则；必填的暂不支持题型会直接报错，避免未填写完整的答卷进入批处理。
 
 ### prepare — 人工预填单行
 
@@ -49,7 +49,7 @@ python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answ
 python main.py prepare --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --authorized
 ```
 
-打开可见浏览器，预填第 2 行答案。脚本只负责预填，不会点击提交；请人工逐题核对后自行决定是否提交。关闭提示后浏览器会退出。
+打开可见浏览器，预填第 2 行答案。脚本只负责预填，不会点击提交；请人工逐题核对后自行决定是否提交。必填的暂不支持题型可保持 Excel 单元格为空，并在此浏览器中手动填写。关闭提示后浏览器会退出。
 
 ### submit — 批量自动提交
 
@@ -92,9 +92,11 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 **提交后行为：**
 
 - 依次为每行答案打开一个独立的浏览器上下文，填写并点击提交
+- 启动浏览器前先校验全部 Excel 行；任一行无效时不会开始批处理
+- 指定 `--row` 时，只要有任一行号不存在，本次不会提交任何行
 - 提交后检测页面是否存在成功标记（如"答卷成功"）、错误提示或验证码拦截
 - 逐行输出结果汇总（成功 / 失败 / 原因）
-- 遇到验证码时该行标记为失败，需人工处理
+- 遇到验证码、频率或安全拦截时，当前行标记为失败并停止后续行，需人工处理
 - 全部成功返回退出码 0，有失败返回 1
 
 ## Excel 格式
@@ -110,9 +112,9 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 | 题型 | 填写方式 |
 |------|----------|
 | 单选 / 下拉选择 | 选项完整文字、选项序号（从 1 开始）或选项值 |
-| 多选 | 多个选项用英文分号 `;` 或中文分号 `；` 分隔，如 `技术；设计` |
+| 多选 | 多个选项用英文分号 `;` 或中文分号 `；` 分隔，如 `技术；设计`；脚本会校验题目规定的最少/最多选择数，并确认页面中每个 checkbox 的最终状态 |
 | 文本 | 直接填写希望出现在输入框中的内容 |
-| 暂不支持的题型 | 留空，在浏览器中手动填写 |
+| 暂不支持的题型 | 不能自动提交；可使用 `prepare` 打开浏览器后手动填写 |
 
 **`question_guide` 工作表：**
 
@@ -146,7 +148,7 @@ survey-maker/
 ## 运行测试
 
 ```powershell
-python -m pytest tests/ -v
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 浏览器测试需要 Playwright Chromium 已安装。未安装时会自动跳过。

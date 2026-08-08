@@ -16,6 +16,16 @@ def _add_url_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", required=True, help="已获授权的问卷星链接（wjx.cn 或 wjx.top）。")
 
 
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("必须是非负数。") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("不能小于 0。")
+    return parsed
+
+
 def _load_questions(url: str):
     questions = fetch_questions(url)
     if not questions:
@@ -59,7 +69,7 @@ def validate_command(arguments: argparse.Namespace) -> int:
         row_numbers = "、".join(str(row.excel_row) for row in answer_rows)
         print(f"Excel 校验通过：共 {len(answer_rows)} 行，Excel 行号为 {row_numbers}。")
     else:
-        print("Excel 格式校验通过，但 answers 工作表没有可预填的数据行。")
+        print("Excel 格式校验通过，但 answers 工作表没有有效答案行。")
     return 0
 
 
@@ -68,7 +78,7 @@ def prepare_command(arguments: argparse.Namespace) -> int:
         raise PermissionError("预填前必须添加 --authorized，确认你拥有该问卷的测试或填写授权。")
 
     questions = _load_questions(arguments.url)
-    answer_rows = read_answer_rows(arguments.excel, questions)
+    answer_rows = read_answer_rows(arguments.excel, questions, allow_manual_questions=True)
     answer_row = next((row for row in answer_rows if row.excel_row == arguments.row), None)
     if answer_row is None:
         raise WorkbookValidationError(f"未找到 Excel 第 {arguments.row} 行的有效答案。")
@@ -90,9 +100,16 @@ def submit_command(arguments: argparse.Namespace) -> int:
         raise WorkbookValidationError("Excel 中没有可提交的答案行。")
 
     total = len(answer_rows)
-    selected = [row for row in answer_rows if arguments.rows is None or row.excel_row in arguments.rows]
-    if arguments.rows is not None and not selected:
-        raise WorkbookValidationError(f"未找到指定的行号 {arguments.rows}，请检查 --row 参数。")
+    if arguments.rows is None:
+        selected = answer_rows
+    else:
+        requested_rows = set(arguments.rows)
+        available_rows = {row.excel_row for row in answer_rows}
+        missing_rows = sorted(requested_rows - available_rows)
+        if missing_rows:
+            missing = "、".join(str(row) for row in missing_rows)
+            raise WorkbookValidationError(f"未找到指定的 Excel 行号：{missing}。本次不会提交任何行。")
+        selected = [row for row in answer_rows if row.excel_row in requested_rows]
 
     print(f"准备批量提交 {len(selected)} / {total} 行答案（headless={arguments.headless}，间隔={arguments.delay}s）……")
     results = batch_submit(
@@ -113,6 +130,8 @@ def submit_command(arguments: argparse.Namespace) -> int:
 
     print()
     print(f"完成：{len(succeeded)} 成功，{len(failed)} 失败，共 {len(results)} 行。")
+    if len(results) < len(selected):
+        print(f"检测到平台安全或频率保护，已停止；剩余 {len(selected) - len(results)} 行未尝试。")
     if failed:
         return 1
     return 0
@@ -136,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     template_parser.set_defaults(handler=template_command)
 
     # validate
-    validate_parser = commands.add_parser("validate", help="校验 Excel 的每一份答案。")
+    validate_parser = commands.add_parser("validate", help="校验 Excel 的每一份答案是否可自动提交。")
     _add_url_argument(validate_parser)
     validate_parser.add_argument("--excel", required=True, help="填写后的 .xlsx 文件路径。")
     validate_parser.set_defaults(handler=validate_command)
@@ -168,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="以可见浏览器运行（用于调试）。",
     )
     submit_parser.add_argument(
-        "--delay", type=float, default=2.0,
+        "--delay", type=_non_negative_float, default=2.0,
         help="每次提交之间的间隔秒数（默认 2 秒）。",
     )
     submit_parser.add_argument(

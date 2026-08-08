@@ -10,7 +10,7 @@ HTML = """
     <div class='ui-radio'><input type='radio' value='1' id='q1_1' name='q1'><div class='label'>北京</div></div>
     <div class='ui-radio'><input type='radio' value='2' id='q1_2' name='q1'><div class='label'>上海</div></div>
   </div>
-  <div class='field ui-field-contain' topic='2' id='div2' req='0' type='4'>
+  <div class='field ui-field-contain' topic='2' id='div2' req='0' minvalue='1' maxvalue='2' type='4'>
     <div class='field-label'><div class='topichtml'>2. 感兴趣的主题</div></div>
     <div class='ui-checkbox'><input type='checkbox' value='1' id='q2_1' name='q2'><div class='label'>技术</div></div>
     <div class='ui-checkbox'><input type='checkbox' value='2' id='q2_2' name='q2'><div class='label'>设计</div></div>
@@ -33,6 +33,8 @@ class QuestionParserTests(unittest.TestCase):
         self.assertEqual(questions[0].question_type, QuestionType.SINGLE_CHOICE)
         self.assertEqual([choice.label for choice in questions[0].choices], ["北京", "上海"])
         self.assertEqual(questions[1].question_type, QuestionType.MULTIPLE_CHOICE)
+        self.assertEqual(questions[1].max_choices, 2)
+        self.assertEqual(questions[1].min_choices, 1)
         self.assertEqual(questions[2].question_type, QuestionType.TEXT)
         self.assertEqual(questions[2].field_name, "q3")
 
