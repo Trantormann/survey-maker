@@ -118,6 +118,13 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 - 用 `--row` 将大批量拆分为小批次，每批之间手动等待一段时间再继续
 - 工具不会绕过验证码或安全机制；触发保护后需人工处理
 
+**拟人浏览器特征（内置）：**
+
+- 启动时添加 `--disable-blink-automation` 参数，隐藏 Chromium 自动化标记
+- 移除 `navigator.webdriver` 属性，使页面检测脚本不易识别为自动化
+- 设置常见中文用户视口（1366×768）、语言环境（zh-CN）和插件列表
+- 以上措施仅降低被误判为机器人的概率，不保证完全规避平台检测
+
 ## Excel 格式
 
 **`answers` 工作表：**

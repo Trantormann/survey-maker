@@ -51,14 +51,9 @@ ProgressCallback = Callable[[SubmitProgress], None]
 def prefilled_browser(url: str, answer_row: AnswerRow) -> Iterator[Page]:
     """打开问卷、填入一行答案，并保持浏览器直到调用方结束上下文。"""
     with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch(headless=False)
-        except PlaywrightError as error:
-            raise BrowserPreparationError(
-                "未找到 Playwright Chromium。请运行：python -m playwright install chromium"
-            ) from error
+        browser = _launch_human_browser(playwright, headless=False)
 
-        context = browser.new_context()
+        context = _new_human_context(browser)
         page = context.new_page()
         try:
             try:
@@ -96,12 +91,7 @@ def batch_submit(
     results: list[SubmitResult] = []
     total = len(answer_rows)
     with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch(headless=headless)
-        except PlaywrightError as error:
-            raise BrowserPreparationError(
-                "未找到 Playwright Chromium。请运行：python -m playwright install chromium"
-            ) from error
+        browser = _launch_human_browser(playwright, headless=headless)
 
         try:
             for index, answer_row in enumerate(answer_rows, start=1):
@@ -194,7 +184,7 @@ def _submit_single(
     """提交单行答案，返回结果记录。"""
     context = None
     try:
-        context = browser.new_context()
+        context = _new_human_context(browser)
         page = context.new_page()
         _report_progress(
             progress_callback,
@@ -286,6 +276,44 @@ _TEXT_CONTROL_SELECTOR = (
 )
 _WJX_SUBMIT_SELECTOR = "#ctlNext"
 _WJX_SUBMIT_WAIT_MS = 10_000
+
+# 拟人浏览器启动参数：隐藏自动化特征
+_HUMAN_LAUNCH_ARGS = [
+    "--disable-blink-automation",
+    "--disable-features=IsolateOrigins,site-per-process",
+]
+_HUMAN_VIEWPORT = {"width": 1366, "height": 768}
+_HUMAN_LOCALE = "zh-CN"
+# 移除 navigator.webdriver 标记，使页面检测脚本不易识别为自动化
+_STEALTH_INIT_SCRIPT = (
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+    "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
+    "Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});"
+)
+
+
+def _launch_human_browser(playwright, *, headless: bool):
+    """以拟人特征启动 Chromium，降低被平台识别为自动化的概率。"""
+    try:
+        browser = playwright.chromium.launch(
+            headless=headless,
+            args=_HUMAN_LAUNCH_ARGS,
+        )
+    except PlaywrightError as error:
+        raise BrowserPreparationError(
+            "未找到 Playwright Chromium。请运行：python -m playwright install chromium"
+        ) from error
+    return browser
+
+
+def _new_human_context(browser):
+    """创建带拟人特征的浏览器上下文。"""
+    context = browser.new_context(
+        viewport=_HUMAN_VIEWPORT,
+        locale=_HUMAN_LOCALE,
+    )
+    context.add_init_script(_STEALTH_INIT_SCRIPT)
+    return context
 
 
 def _submit_form(page: Page) -> None:

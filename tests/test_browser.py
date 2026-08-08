@@ -223,7 +223,7 @@ class BrowserFillTests(unittest.TestCase):
 
     def test_context_creation_failure_is_returned_as_a_row_failure(self) -> None:
         class BrokenBrowser:
-            def new_context(self):
+            def new_context(self, **_kwargs):
                 raise BrowserPreparationError("浏览器上下文不可用")
 
         result = _submit_single(BrokenBrowser(), "https://v.wjx.cn/vm/example.aspx", AnswerRow(2, ()))
@@ -241,11 +241,14 @@ class BrowserFillTests(unittest.TestCase):
             def new_page(self) -> FakePage:
                 return FakePage()
 
+            def add_init_script(self, _script) -> None:
+                pass
+
             def close(self) -> None:
                 pass
 
         class FakeBrowser:
-            def new_context(self) -> FakeContext:
+            def new_context(self, **_kwargs) -> FakeContext:
                 return FakeContext()
 
         events = []
@@ -274,7 +277,7 @@ class BrowserFillTests(unittest.TestCase):
                 pass
 
         class FakeChromium:
-            def launch(self, *, headless: bool) -> FakeBrowser:
+            def launch(self, *, headless: bool, **_kwargs) -> FakeBrowser:
                 return FakeBrowser()
 
         class FakePlaywright:
@@ -312,7 +315,7 @@ class BrowserFillTests(unittest.TestCase):
                 pass
 
         class FakeChromium:
-            def launch(self, *, headless: bool) -> FakeBrowser:
+            def launch(self, *, headless: bool, **_kwargs) -> FakeBrowser:
                 return FakeBrowser()
 
         class FakePlaywright:
