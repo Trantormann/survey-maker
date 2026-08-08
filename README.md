@@ -1,8 +1,10 @@
 # Survey Maker
 
-将已获授权的问卷星链接解析为 Excel 回答模板，支持人工预填核对或批量自动提交。
+将问卷星链接解析为 Excel 回答模板，再通过预填 Excel 进行批量问卷提交。
 
-仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。工具不会处理验证码或规避平台限流；检测到验证码或频率/安全拦截后，会停止后续批处理。请在合法授权范围内使用。
+目前仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。
+
+*工具不会处理验证码或规避平台限流；检测到验证码或频率/安全拦截后，会停止后续批处理。请在合法授权范围内使用。*
 
 ## 安装
 
@@ -23,25 +25,33 @@ python -m playwright install chromium
 
 ## 使用
 
-### inspect — 查看题目
+### 1、查看题目
 
 ```powershell
 python main.py inspect --url "https://v.wjx.cn/vm/your-form.aspx"
 ```
 
-### template — 生成 Excel 模板
+### 2、生成 Excel 模板
 
 ```powershell
 python main.py template --url "https://v.wjx.cn/vm/your-form.aspx" --output "answers.xlsx"
 ```
 
-### validate — 校验答案
+### 3、校验答案
 
 ```powershell
 python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx"
 ```
 
 `validate` 采用自动提交的严格规则；必填的暂不支持题型会直接报错，避免未填写完整的答卷进入批处理。
+
+### 4、批量提交
+
+```powershell
+python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
+```
+
+## 其他操作
 
 ### prepare — 人工预填单行
 
