@@ -78,12 +78,14 @@ def batch_submit(
     headless: bool = True,
     delay: float = 2.0,
     jitter: float = 0.0,
+    speed: str = "fast",
     progress_callback: ProgressCallback | None = None,
 ) -> list[SubmitResult]:
     """对 Excel 中每一行答案依次打开问卷、填写并自动提交。
 
     delay 为基础间隔秒数；jitter 为附加随机抖动上限（秒），
     实际等待 = delay + random.uniform(0, jitter)，使提交节奏更接近真人。
+    speed 为 'fast' 时跳过高拟人行为模拟，'human' 时启用贝塞尔鼠标等。
     """
     if not answer_rows:
         raise BrowserPreparationError("没有可提交的答案行。")
@@ -107,6 +109,7 @@ def batch_submit(
                     browser,
                     url,
                     answer_row,
+                    speed=speed,
                     progress_callback=progress_callback,
                     position=index,
                     total=total,
@@ -177,6 +180,7 @@ def _submit_single(
     url: str,
     answer_row: AnswerRow,
     *,
+    speed: str = "fast",
     progress_callback: ProgressCallback | None = None,
     position: int = 1,
     total: int = 1,
@@ -206,6 +210,7 @@ def _submit_single(
         _fill_answer_row(
             page,
             answer_row,
+            speed=speed,
             progress_callback=progress_callback,
             position=position,
             total=total,
@@ -218,7 +223,7 @@ def _submit_single(
             stage="submitting",
             message="正在提交并等待结果。",
         )
-        _submit_form(page)
+        _submit_form(page, speed=speed)
         return SubmitResult(
             excel_row=answer_row.excel_row,
             success=True,
@@ -384,18 +389,26 @@ def _launch_human_browser(playwright, *, headless: bool):
 # 拟人行为模拟：鼠标轨迹、点击节奏、打字节奏
 # ---------------------------------------------------------------------------
 
+def _fast_click(page: Page, locator: Locator, *, timeout: int = 5_000) -> None:
+    """快速点击：无贝塞尔轨迹、无停顿。"""
+    locator.click(timeout=timeout)
+
+
+def _fast_type(page: Page, locator: Locator, text: str) -> None:
+    """快速填写：直接用 fill() 而非逐字符输入。"""
+    locator.fill(text)
+
+
 def _human_mouse_move(page: Page, target_x: float, target_y: float) -> None:
     """模拟真人鼠标移动：沿贝塞尔曲线从随机起点移动到目标位置。"""
     try:
         start_x = random.uniform(100, 800)
         start_y = random.uniform(100, 500)
         steps = random.randint(15, 30)
-        # 二次贝塞尔曲线控制点（在起点和终点之间偏移，制造弧线）
         ctrl_x = (start_x + target_x) / 2 + random.uniform(-100, 100)
         ctrl_y = (start_y + target_y) / 2 + random.uniform(-80, 80)
         for i in range(1, steps + 1):
             t = i / steps
-            # 二次贝塞尔曲线公式
             x = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * ctrl_x + t ** 2 * target_x
             y = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * ctrl_y + t ** 2 * target_y
             page.mouse.move(x, y)
@@ -440,27 +453,28 @@ def _new_human_context(browser):
     return context
 
 
-def _submit_form(page: Page) -> None:
+def _submit_form(page: Page, *, speed: str = "fast") -> None:
     """点击提交按钮，处理确认对话框，并等待结果页面。"""
     previous_body_text = _body_text(page)
+    click_fn: Callable[..., None] = _human_click if speed == "human" else _fast_click
 
     # 先注册 dialog 拦截（问卷星可能弹出原生 confirm）
     page.on("dialog", lambda dialog: dialog.accept())
 
-    # 模拟真人滚动到页面底部
+    # 滚动到页面底部，确保提交按钮可见
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    time.sleep(random.uniform(0.5, 1.5))
+    time.sleep(random.uniform(0.5, 1.5) if speed == "human" else 0.3)
 
     submit_btn = _find_submit_button(page)
 
     if submit_btn is None:
         raise BrowserPreparationError("未找到可见的提交按钮。请确认问卷已加载到最后一页。")
 
-    _human_click(page, submit_btn)
+    click_fn(page, submit_btn)
 
     # 等待可能的确认弹窗（非 WJX 平台）
     time.sleep(0.5)
-    _try_click_confirm(page)
+    _try_click_confirm(page, click_fn=click_fn)
 
     # 问卷星通过 AJAX 提交，成功后会将文本写入 #ValError，然后 1.5 秒后跳转。
     _wait_for_submit_result(page)
@@ -549,14 +563,14 @@ def _wait_for_submit_result(page: Page) -> None:
         pass
 
 
-def _try_click_confirm(page: Page) -> None:
+def _try_click_confirm(page: Page, *, click_fn: Callable[..., None] = _fast_click) -> None:
     """处理问卷星可能出现的页面内确认弹窗（非原生 dialog）。"""
     # 先尝试 CSS class 选择器（精确匹配弹窗按钮）
     for selector in _CONFIRM_BUTTON_SELECTORS:
         confirm = page.locator(selector)
         if confirm.count():
             try:
-                _human_click(page, confirm.first, timeout=3_000)
+                click_fn(page, confirm.first, timeout=3_000)
                 return
             except PlaywrightError:
                 continue
@@ -570,7 +584,7 @@ def _try_click_confirm(page: Page) -> None:
         for _, elements in candidates:
             if 0 < elements.count() <= 2:  # 限制匹配数量，避免误匹配
                 try:
-                    _human_click(page, elements.first, timeout=3_000)
+                    click_fn(page, elements.first, timeout=3_000)
                     return
                 except PlaywrightError:
                     continue
@@ -631,18 +645,22 @@ def _fill_answer_row(
     page: Page,
     answer_row: AnswerRow,
     *,
+    speed: str = "fast",
     progress_callback: ProgressCallback | None = None,
     position: int = 1,
     total: int = 1,
 ) -> None:
     question_total = len(answer_row.answers)
+    click_fn: Callable[..., None] = _human_click if speed == "human" else _fast_click
+    type_fn: Callable[..., None] = _human_type if speed == "human" else _fast_type
+
     for question_position, answer in enumerate(answer_row.answers, start=1):
         question = answer.question
         if answer.text is None and not answer.choice_values:
             continue
 
         # 题目间随机停顿，模拟真人阅读和思考时间
-        if question_position > 1:
+        if speed == "human" and question_position > 1:
             time.sleep(random.uniform(0.8, 3.0))
 
         _report_progress(
@@ -661,7 +679,7 @@ def _fill_answer_row(
                 choice = choices_by_value.get(value)
                 if choice is None:
                     raise BrowserPreparationError(f"Q{question.number} 的答案选项已发生变化。")
-                _set_choice_selected(page, field, choice, selected=True)
+                _set_choice_selected(page, field, choice, selected=True, click_fn=click_fn)
         elif question.question_type == QuestionType.MULTIPLE_CHOICE:
             selected_values = set(answer.choice_values)
             known_values = {choice.value for choice in question.choices}
@@ -671,20 +689,20 @@ def _fill_answer_row(
                     f"Q{question.number} 的答案选项已发生变化：{', '.join(sorted(unknown_values))}。"
                 )
             for choice in question.choices:
-                _set_choice_selected(page, field, choice, selected=choice.value in selected_values)
+                _set_choice_selected(page, field, choice, selected=choice.value in selected_values, click_fn=click_fn)
         elif question.question_type == QuestionType.SELECT:
             select = field.locator("select").first
             select.select_option(value=answer.choice_values[0])
         elif question.question_type == QuestionType.TEXT and answer.text is not None:
-            _fill_text_answer(page, field, question, answer.text)
+            _fill_text_answer(page, field, question, answer.text, type_fn=type_fn)
 
 
-def _fill_text_answer(page: Page, field: Locator, question: Question, text: str) -> None:
+def _fill_text_answer(page: Page, field: Locator, question: Question, text: str, *, type_fn: Callable[..., None] = _fast_type) -> None:
     text_control = field.locator(_TEXT_CONTROL_SELECTOR).first
     try:
         text_control.wait_for(state="visible", timeout=15_000)
         text_control.scroll_into_view_if_needed()
-        _human_type(page, text_control, text)
+        type_fn(page, text_control, text)
         is_contenteditable = text_control.get_attribute("contenteditable") == "true"
         if is_contenteditable:
             text_control.evaluate("element => element.blur()")
@@ -712,7 +730,7 @@ def _verify_hidden_text_value(field: Locator, question: Question, text: str) -> 
         raise BrowserPreparationError(f"Q{question.number} 的填空状态无法验证。") from error
 
 
-def _set_choice_selected(page: Page, field: Locator, choice: Choice, *, selected: bool) -> None:
+def _set_choice_selected(page: Page, field: Locator, choice: Choice, *, selected: bool, click_fn: Callable[..., None] = _fast_click) -> None:
     """将一个单选或多选控件收敛到指定状态，并确认原生 input 已同步。"""
     input_selector = _id_selector(choice.input_id) if choice.input_id else _value_selector(choice.value)
     input_control = field.locator(input_selector).first
@@ -728,7 +746,7 @@ def _set_choice_selected(page: Page, field: Locator, choice: Choice, *, selected
     )
     if visual_control.count():
         try:
-            _human_click(page, visual_control.first, timeout=3_000)
+            click_fn(page, visual_control.first, timeout=3_000)
         except PlaywrightError:
             pass
 

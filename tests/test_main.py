@@ -73,6 +73,7 @@ class SubmitCommandTests(unittest.TestCase):
             headless=False,
             delay=3.0,
             jitter=0.0,
+            speed="fast",
         )
         with (
             patch.object(main, "_load_questions", return_value=[]),
@@ -91,6 +92,7 @@ class SubmitCommandTests(unittest.TestCase):
             headless=False,
             delay=3.0,
             jitter=0.0,
+            speed="fast",
             progress_callback=main._print_submit_progress,
         )
 
@@ -105,6 +107,7 @@ class SubmitCommandTests(unittest.TestCase):
             headless=True,
             delay=0.0,
             jitter=0.0,
+            speed="fast",
         )
         with (
             patch.object(main, "_load_questions", return_value=[]),
@@ -126,6 +129,7 @@ class SubmitCommandTests(unittest.TestCase):
             headless=True,
             delay=0.0,
             jitter=0.0,
+            speed="fast",
             progress_callback=main._print_submit_progress,
         )
 

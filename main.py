@@ -132,7 +132,7 @@ def submit_command(arguments: argparse.Namespace) -> int:
 
     print(
         f"准备批量提交 {len(selected)} / {total} 行答案"
-        f"（headless={arguments.headless}，间隔={arguments.delay}s，抖动={arguments.jitter}s）……",
+        f"（headless={arguments.headless}，间隔={arguments.delay}s，抖动={arguments.jitter}s，speed={arguments.speed}）……",
         flush=True,
     )
     results = batch_submit(
@@ -141,6 +141,7 @@ def submit_command(arguments: argparse.Namespace) -> int:
         headless=arguments.headless,
         delay=arguments.delay,
         jitter=arguments.jitter,
+        speed=arguments.speed,
         progress_callback=_print_submit_progress,
     )
 
@@ -216,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--jitter", type=_non_negative_float, default=0.0,
         help="在基础间隔上附加的随机抖动上限秒数（默认 0）。例如 --delay 15 --jitter 10 "
         "表示每次等待 15–25 秒随机时长，使提交节奏更接近真人。",
+    )
+    submit_parser.add_argument(
+        "--speed", choices=["fast", "human"], default="fast",
+        help="行为模拟模式：fast=极速直填（默认），human=贝塞尔鼠标+逐字输入+随机停顿（更慢但更像真人）。",
     )
     submit_parser.add_argument(
         "--authorized", action="store_true", help="确认你拥有该问卷的测试或填写授权。"
