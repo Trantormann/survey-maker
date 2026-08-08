@@ -86,13 +86,22 @@ class BrowserFillTests(unittest.TestCase):
                 AnswerValue(question=text, text="需要补齐服务"),
             ),
         )
+        events = []
 
-        _fill_answer_row(self.page, answer_row)
+        _fill_answer_row(self.page, answer_row, progress_callback=events.append, position=2, total=4)
 
         self.assertTrue(self.page.locator("#q1_2").is_checked())
         self.assertTrue(self.page.locator("#q2_1").is_checked())
         self.assertTrue(self.page.locator("#q2_2").is_checked())
         self.assertEqual(self.page.locator("textarea[name='q3']").input_value(), "需要补齐服务")
+        self.assertEqual(
+            [(event.stage, event.message) for event in events],
+            [
+                ("filling_question", "正在填写 Q1（第 1/3 题）。"),
+                ("filling_question", "正在填写 Q2（第 2/3 题）。"),
+                ("filling_question", "正在填写 Q3（第 3/3 题）。"),
+            ],
+        )
 
     def test_multiple_choice_matches_the_requested_set(self) -> None:
         self.page.set_content(
@@ -210,6 +219,42 @@ class BrowserFillTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("浏览器上下文不可用", result.message)
 
+    def test_submit_reports_opening_filling_and_submitting_stages(self) -> None:
+        class FakePage:
+            def goto(self, *_args, **_kwargs) -> None:
+                pass
+
+        class FakeContext:
+            def new_page(self) -> FakePage:
+                return FakePage()
+
+            def close(self) -> None:
+                pass
+
+        class FakeBrowser:
+            def new_context(self) -> FakeContext:
+                return FakeContext()
+
+        events = []
+        with (
+            patch("survey_maker.browser._fill_answer_row"),
+            patch("survey_maker.browser._submit_form"),
+        ):
+            result = _submit_single(
+                FakeBrowser(),
+                "https://v.wjx.cn/vm/example.aspx",
+                AnswerRow(2, ()),
+                progress_callback=events.append,
+                position=1,
+                total=2,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [(event.stage, event.position, event.total, event.excel_row) for event in events],
+            [("opening", 1, 2, 2), ("filling", 1, 2, 2), ("submitting", 1, 2, 2)],
+        )
+
     def test_batch_stops_after_captcha_failure(self) -> None:
         class FakeBrowser:
             def close(self) -> None:
@@ -232,6 +277,7 @@ class BrowserFillTests(unittest.TestCase):
         first_row = AnswerRow(excel_row=2, answers=())
         second_row = AnswerRow(excel_row=3, answers=())
         captcha_result = SubmitResult(excel_row=2, success=False, message="提交被验证码拦截")
+        events = []
         with (
             patch("survey_maker.browser.sync_playwright", return_value=FakePlaywrightContext()),
             patch("survey_maker.browser._submit_single", return_value=captcha_result) as submit_single,
@@ -240,10 +286,65 @@ class BrowserFillTests(unittest.TestCase):
                 "https://v.wjx.cn/vm/example.aspx",
                 [first_row, second_row],
                 delay=0,
+                progress_callback=events.append,
             )
 
         self.assertEqual(results, [captcha_result])
         submit_single.assert_called_once()
+        self.assertEqual([event.stage for event in events], ["starting", "failed", "stopped"])
+
+    def test_batch_continues_after_ordinary_failure_and_reports_all_rows(self) -> None:
+        class FakeBrowser:
+            def close(self) -> None:
+                pass
+
+        class FakeChromium:
+            def launch(self, *, headless: bool) -> FakeBrowser:
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightContext:
+            def __enter__(self) -> FakePlaywright:
+                return FakePlaywright()
+
+            def __exit__(self, exc_type, exc_value, traceback) -> None:
+                return None
+
+        first_row = AnswerRow(excel_row=2, answers=())
+        second_row = AnswerRow(excel_row=3, answers=())
+        first_result = SubmitResult(excel_row=2, success=False, message="未找到提交按钮。")
+        second_result = SubmitResult(excel_row=3, success=True, message="提交成功")
+        events = []
+        with (
+            patch("survey_maker.browser.sync_playwright", return_value=FakePlaywrightContext()),
+            patch(
+                "survey_maker.browser._submit_single",
+                side_effect=[first_result, second_result],
+            ) as submit_single,
+            patch("survey_maker.browser.time.sleep") as sleep,
+        ):
+            results = batch_submit(
+                "https://v.wjx.cn/vm/example.aspx",
+                [first_row, second_row],
+                delay=1.5,
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(results, [first_result, second_result])
+        self.assertEqual(submit_single.call_count, 2)
+        sleep.assert_called_once_with(1.5)
+        self.assertEqual(
+            [(event.stage, event.excel_row) for event in events],
+            [
+                ("starting", 2),
+                ("failed", 2),
+                ("waiting", 2),
+                ("starting", 3),
+                ("succeeded", 3),
+            ],
+        )
 
 
 if __name__ == "__main__":

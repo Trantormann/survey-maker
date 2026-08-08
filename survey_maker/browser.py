@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import time
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, sync_playwright
@@ -28,6 +28,18 @@ class SubmitResult:
     excel_row: int
     success: bool
     message: str
+
+
+@dataclass(frozen=True)
+class SubmitProgress:
+    position: int
+    total: int
+    excel_row: int
+    stage: str
+    message: str
+
+
+ProgressCallback = Callable[[SubmitProgress], None]
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +81,14 @@ def batch_submit(
     *,
     headless: bool = True,
     delay: float = 2.0,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[SubmitResult]:
     """对 Excel 中每一行答案依次打开问卷、填写并自动提交。"""
     if not answer_rows:
         raise BrowserPreparationError("没有可提交的答案行。")
 
     results: list[SubmitResult] = []
+    total = len(answer_rows)
     with sync_playwright() as playwright:
         try:
             browser = playwright.chromium.launch(headless=headless)
@@ -84,12 +98,51 @@ def batch_submit(
             ) from error
 
         try:
-            for index, answer_row in enumerate(answer_rows):
-                result = _submit_single(browser, url, answer_row)
+            for index, answer_row in enumerate(answer_rows, start=1):
+                _report_progress(
+                    progress_callback,
+                    position=index,
+                    total=total,
+                    excel_row=answer_row.excel_row,
+                    stage="starting",
+                    message="开始处理此行。",
+                )
+                result = _submit_single(
+                    browser,
+                    url,
+                    answer_row,
+                    progress_callback=progress_callback,
+                    position=index,
+                    total=total,
+                )
                 results.append(result)
+                _report_progress(
+                    progress_callback,
+                    position=index,
+                    total=total,
+                    excel_row=answer_row.excel_row,
+                    stage="succeeded" if result.success else "failed",
+                    message=result.message,
+                )
                 if _should_stop_batch(result):
+                    _report_progress(
+                        progress_callback,
+                        position=index,
+                        total=total,
+                        excel_row=answer_row.excel_row,
+                        stage="stopped",
+                        message="检测到验证码、频率或安全拦截，已停止后续提交。",
+                    )
                     break
-                if index < len(answer_rows) - 1 and delay > 0:
+                if index < total and delay > 0:
+                    _report_progress(
+                        progress_callback,
+                        position=index,
+                        total=total,
+                        excel_row=answer_row.excel_row,
+                        stage="waiting",
+                        message=f"等待 {delay:g} 秒后处理下一行。",
+                    )
                     time.sleep(delay)
         finally:
             browser.close()
@@ -97,18 +150,77 @@ def batch_submit(
     return results
 
 
+def _report_progress(
+    callback: ProgressCallback | None,
+    *,
+    position: int,
+    total: int,
+    excel_row: int,
+    stage: str,
+    message: str,
+) -> None:
+    if callback is not None:
+        callback(
+            SubmitProgress(
+                position=position,
+                total=total,
+                excel_row=excel_row,
+                stage=stage,
+                message=message,
+            )
+        )
+
+
 def _should_stop_batch(result: SubmitResult) -> bool:
     return not result.success and any(hint in result.message for hint in _STOP_BATCH_HINTS)
 
 
-def _submit_single(browser, url: str, answer_row: AnswerRow) -> SubmitResult:
+def _submit_single(
+    browser,
+    url: str,
+    answer_row: AnswerRow,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    position: int = 1,
+    total: int = 1,
+) -> SubmitResult:
     """提交单行答案，返回结果记录。"""
     context = None
     try:
         context = browser.new_context()
         page = context.new_page()
+        _report_progress(
+            progress_callback,
+            position=position,
+            total=total,
+            excel_row=answer_row.excel_row,
+            stage="opening",
+            message="正在打开问卷页面。",
+        )
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        _fill_answer_row(page, answer_row)
+        _report_progress(
+            progress_callback,
+            position=position,
+            total=total,
+            excel_row=answer_row.excel_row,
+            stage="filling",
+            message="正在填写题目。",
+        )
+        _fill_answer_row(
+            page,
+            answer_row,
+            progress_callback=progress_callback,
+            position=position,
+            total=total,
+        )
+        _report_progress(
+            progress_callback,
+            position=position,
+            total=total,
+            excel_row=answer_row.excel_row,
+            stage="submitting",
+            message="正在提交并等待结果。",
+        )
         _submit_form(page)
         return SubmitResult(
             excel_row=answer_row.excel_row,
@@ -300,12 +412,28 @@ def _check_result(
 # 预填辅助（原有逻辑不变）
 # ---------------------------------------------------------------------------
 
-def _fill_answer_row(page: Page, answer_row: AnswerRow) -> None:
-    for answer in answer_row.answers:
+def _fill_answer_row(
+    page: Page,
+    answer_row: AnswerRow,
+    *,
+    progress_callback: ProgressCallback | None = None,
+    position: int = 1,
+    total: int = 1,
+) -> None:
+    question_total = len(answer_row.answers)
+    for question_position, answer in enumerate(answer_row.answers, start=1):
         question = answer.question
         if answer.text is None and not answer.choice_values:
             continue
 
+        _report_progress(
+            progress_callback,
+            position=position,
+            total=total,
+            excel_row=answer_row.excel_row,
+            stage="filling_question",
+            message=f"正在填写 Q{question.number}（第 {question_position}/{question_total} 题）。",
+        )
         field = page.locator(_id_selector(question.field_id))
         field.wait_for(state="attached", timeout=15_000)
         if question.question_type == QuestionType.SINGLE_CHOICE:

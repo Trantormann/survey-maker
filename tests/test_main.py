@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import main
-from survey_maker.browser import SubmitResult
+from survey_maker.browser import SubmitProgress, SubmitResult
 from survey_maker.excel import AnswerRow, WorkbookValidationError
 
 
@@ -89,6 +89,56 @@ class SubmitCommandTests(unittest.TestCase):
             [row_five],
             headless=False,
             delay=3.0,
+            progress_callback=main._print_submit_progress,
+        )
+
+    def test_all_rows_are_submitted_when_row_is_omitted(self) -> None:
+        row_two = AnswerRow(excel_row=2, answers=())
+        row_five = AnswerRow(excel_row=5, answers=())
+        arguments = Namespace(
+            url="https://v.wjx.cn/vm/example.aspx",
+            excel="answers.xlsx",
+            authorized=True,
+            rows=None,
+            headless=True,
+            delay=0.0,
+        )
+        with (
+            patch.object(main, "_load_questions", return_value=[]),
+            patch.object(main, "read_answer_rows", return_value=[row_two, row_five]),
+            patch.object(
+                main,
+                "batch_submit",
+                return_value=[
+                    SubmitResult(excel_row=2, success=True, message="提交成功"),
+                    SubmitResult(excel_row=5, success=True, message="提交成功"),
+                ],
+            ) as batch_submit,
+        ):
+            self.assertEqual(main.submit_command(arguments), 0)
+
+        batch_submit.assert_called_once_with(
+            arguments.url,
+            [row_two, row_five],
+            headless=True,
+            delay=0.0,
+            progress_callback=main._print_submit_progress,
+        )
+
+    def test_progress_printer_includes_position_row_and_error(self) -> None:
+        progress = SubmitProgress(
+            position=2,
+            total=5,
+            excel_row=7,
+            stage="failed",
+            message="未找到提交按钮。",
+        )
+        with patch("builtins.print") as print_mock:
+            main._print_submit_progress(progress)
+
+        print_mock.assert_called_once_with(
+            "[2/5 | Excel 第 7 行] 失败：未找到提交按钮。",
+            flush=True,
         )
 
     def test_submit_parser_rejects_negative_delay(self) -> None:

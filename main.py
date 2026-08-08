@@ -8,7 +8,7 @@ import sys
 import requests
 
 from survey_maker import WorkbookValidationError, create_template, fetch_questions, read_answer_rows
-from survey_maker.browser import BrowserPreparationError, SubmitResult, batch_submit, prefilled_browser
+from survey_maker.browser import BrowserPreparationError, SubmitProgress, batch_submit, prefilled_browser
 from survey_maker.wjx import QuestionType, iter_choice_labels
 
 
@@ -41,6 +41,25 @@ def _question_type_name(question_type: QuestionType) -> str:
         QuestionType.TEXT: "文本",
         QuestionType.UNSUPPORTED: "暂不支持",
     }[question_type]
+
+
+_PROGRESS_STAGE_NAMES = {
+    "starting": "开始",
+    "opening": "打开页面",
+    "filling": "填写",
+    "filling_question": "填写题目",
+    "submitting": "提交",
+    "succeeded": "成功",
+    "failed": "失败",
+    "waiting": "等待",
+    "stopped": "停止",
+}
+
+
+def _print_submit_progress(progress: SubmitProgress) -> None:
+    stage_name = _PROGRESS_STAGE_NAMES.get(progress.stage, progress.stage)
+    prefix = f"[{progress.position}/{progress.total} | Excel 第 {progress.excel_row} 行]"
+    print(f"{prefix} {stage_name}：{progress.message}", flush=True)
 
 
 def inspect_command(arguments: argparse.Namespace) -> int:
@@ -111,25 +130,27 @@ def submit_command(arguments: argparse.Namespace) -> int:
             raise WorkbookValidationError(f"未找到指定的 Excel 行号：{missing}。本次不会提交任何行。")
         selected = [row for row in answer_rows if row.excel_row in requested_rows]
 
-    print(f"准备批量提交 {len(selected)} / {total} 行答案（headless={arguments.headless}，间隔={arguments.delay}s）……")
+    print(
+        f"准备批量提交 {len(selected)} / {total} 行答案"
+        f"（headless={arguments.headless}，间隔={arguments.delay}s）……",
+        flush=True,
+    )
     results = batch_submit(
         arguments.url,
         selected,
         headless=arguments.headless,
         delay=arguments.delay,
+        progress_callback=_print_submit_progress,
     )
 
-    # 打印结果汇总
     succeeded = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
 
     print()
-    for result in results:
-        status = "✓" if result.success else "✗"
-        print(f"  {status} 行 {result.excel_row}: {result.message}")
-
-    print()
     print(f"完成：{len(succeeded)} 成功，{len(failed)} 失败，共 {len(results)} 行。")
+    if failed:
+        failed_rows = "、".join(str(result.excel_row) for result in failed)
+        print(f"失败的 Excel 行：{failed_rows}。")
     if len(results) < len(selected):
         print(f"检测到平台安全或频率保护，已停止；剩余 {len(selected) - len(results)} 行未尝试。")
     if failed:
