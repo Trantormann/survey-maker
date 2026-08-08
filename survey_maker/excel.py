@@ -181,7 +181,12 @@ def _parse_answer(
         return AnswerValue(question=question)
 
     if question.question_type in {QuestionType.SINGLE_CHOICE, QuestionType.SELECT}:
-        return AnswerValue(question=question, choice_values=(_resolve_choice(question, value, excel_row),))
+        try:
+            choice_value = _resolve_choice(question, value, excel_row)
+        except WorkbookValidationError:
+            _raise_if_multiple_values_for_single_choice(question, value, excel_row)
+            raise
+        return AnswerValue(question=question, choice_values=(choice_value,))
 
     if question.question_type == QuestionType.MULTIPLE_CHOICE:
         parts = [part.strip() for part in _MULTI_VALUE_SEPARATOR.split(value)]
@@ -206,6 +211,17 @@ def _parse_answer(
         return AnswerValue(question=question, text=value)
 
 def _resolve_choice(question: Question, value: str, excel_row: int) -> str:
+    resolved_value = _try_resolve_choice(question, value)
+    if resolved_value is not None:
+        return resolved_value
+
+    choices = "；".join(iter_choice_labels(question))
+    raise WorkbookValidationError(
+        f"第 {excel_row} 行的 Q{question.number} 答案“{value}”不在可选项中。可选项：{choices}"
+    )
+
+
+def _try_resolve_choice(question: Question, value: str) -> str | None:
     candidate = _normalize(value)
     if candidate.isdigit():
         choice_index = int(candidate)
@@ -215,10 +231,18 @@ def _resolve_choice(question: Question, value: str, excel_row: int) -> str:
     matches = [choice for choice in question.choices if candidate in _choice_aliases(choice)]
     if len(matches) == 1:
         return matches[0].value
-    choices = "；".join(iter_choice_labels(question))
-    raise WorkbookValidationError(
-        f"第 {excel_row} 行的 Q{question.number} 答案“{value}”不在可选项中。可选项：{choices}"
-    )
+    return None
+
+
+def _raise_if_multiple_values_for_single_choice(question: Question, value: str, excel_row: int) -> None:
+    parts = [part.strip() for part in _MULTI_VALUE_SEPARATOR.split(value)]
+    if len(parts) < 2 or any(not part for part in parts):
+        return
+    if all(_try_resolve_choice(question, part) is not None for part in parts):
+        raise WorkbookValidationError(
+            f"第 {excel_row} 行的 Q{question.number} 是单选题，却填写了多个有效选项“{value}”。"
+            "请仅保留一个选项；分号只能用于多选题。"
+        )
 
 
 def _choice_aliases(choice: Choice) -> set[str]:

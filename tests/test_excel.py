@@ -71,6 +71,17 @@ class ExcelTemplateTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkbookValidationError, "Q1.*必填"):
                 read_answer_rows(path, QUESTIONS)
 
+    def test_multiple_valid_values_in_a_single_choice_are_explained(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "answers.xlsx"
+            create_template(QUESTIONS, path)
+            workbook = load_workbook(path)
+            workbook["answers"].append(["北京；上海", "技术", ""])
+            workbook.save(path)
+
+            with self.assertRaisesRegex(WorkbookValidationError, "Q1 是单选题.*多个有效选项"):
+                read_answer_rows(path, QUESTIONS)
+
     def test_reordered_headers_are_rejected(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "answers.xlsx"
