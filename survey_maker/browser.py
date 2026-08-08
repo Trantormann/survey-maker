@@ -161,6 +161,10 @@ _ERROR_SELECTORS = [
 ]
 _CAPTCHA_HINTS = ("验证码", "滑动", "请拖动", "安全验证", "滑块")
 _STOP_BATCH_HINTS = (*_CAPTCHA_HINTS, "访问过于频繁", "操作过于频繁", "提交过于频繁", "请稍后")
+_TEXT_CONTROL_SELECTOR = (
+    "[contenteditable='true']:visible, textarea:visible, "
+    "input[type='text']:visible, input:not([type]):visible"
+)
 
 
 def _submit_form(page: Page) -> None:
@@ -325,8 +329,40 @@ def _fill_answer_row(page: Page, answer_row: AnswerRow) -> None:
             select = field.locator("select").first
             select.select_option(value=answer.choice_values[0])
         elif question.question_type == QuestionType.TEXT and answer.text is not None:
-            text_box = field.locator("textarea, input[type='text'], input:not([type])").first
-            text_box.fill(answer.text)
+            _fill_text_answer(field, question, answer.text)
+
+
+def _fill_text_answer(field: Locator, question: Question, text: str) -> None:
+    text_control = field.locator(_TEXT_CONTROL_SELECTOR).first
+    try:
+        text_control.wait_for(state="visible", timeout=15_000)
+        text_control.scroll_into_view_if_needed()
+        text_control.fill(text)
+        is_contenteditable = text_control.get_attribute("contenteditable") == "true"
+        if is_contenteditable:
+            text_control.evaluate("element => element.blur()")
+            actual_text = text_control.inner_text()
+        else:
+            actual_text = text_control.input_value()
+    except PlaywrightError as error:
+        raise BrowserPreparationError(f"Q{question.number} 未找到可填写的文本控件。") from error
+
+    if actual_text != text:
+        raise BrowserPreparationError(f"Q{question.number} 的填空内容未能写入页面。")
+
+    if is_contenteditable:
+        _verify_hidden_text_value(field, question, text)
+
+
+def _verify_hidden_text_value(field: Locator, question: Question, text: str) -> None:
+    hidden_input = field.locator("input.ui-input-text").first
+    if not hidden_input.count():
+        return
+    try:
+        if hidden_input.input_value() != text:
+            raise BrowserPreparationError(f"Q{question.number} 的填空内容未同步到问卷。")
+    except PlaywrightError as error:
+        raise BrowserPreparationError(f"Q{question.number} 的填空状态无法验证。") from error
 
 
 def _set_choice_selected(field: Locator, choice: Choice, *, selected: bool) -> None:

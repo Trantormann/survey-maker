@@ -148,6 +148,35 @@ class BrowserFillTests(unittest.TestCase):
 
         self.assertTrue(self.page.locator("#q4_1").is_checked())
 
+    def test_fills_wjx_contenteditable_text_and_syncs_hidden_input(self) -> None:
+        self.page.set_content(
+            """
+            <div class="field" id="div16">
+              <input class="ui-input-text" type="text" style="display:none">
+                            <label class="textEdit">
+                                <span class="textCont" contenteditable="true" style="display:inline-block;width:200px;min-height:20px" oninput="document.querySelector('#div16 input').value = this.textContent"></span>
+                            </label>
+            </div>
+            """
+        )
+        text = Question(
+            number=16,
+            title="填空",
+            question_type=QuestionType.TEXT,
+            required=True,
+            field_id="div16",
+            field_name=None,
+        )
+        answer_row = AnswerRow(
+            excel_row=2,
+            answers=(AnswerValue(question=text, text="定时上门维修站"),),
+        )
+
+        _fill_answer_row(self.page, answer_row)
+
+        self.assertEqual(self.page.locator("#div16 .textCont").inner_text(), "定时上门维修站")
+        self.assertEqual(self.page.locator("#div16 input.ui-input-text").input_value(), "定时上门维修站")
+
     def test_submit_handles_inline_confirmation_and_new_success_text(self) -> None:
         self.page.set_content(
             """
