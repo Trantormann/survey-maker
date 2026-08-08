@@ -1,10 +1,12 @@
-"""在可见浏览器中预填一行已校验的问卷答案。"""
+"""在浏览器中预填与批量提交问卷星答案。"""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 import json
-from typing import Iterator
+import time
+from typing import Iterator, Sequence
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, sync_playwright
@@ -14,8 +16,23 @@ from .wjx import Choice, Question, QuestionType
 
 
 class BrowserPreparationError(RuntimeError):
-    """无法加载或预填问卷页面时抛出。"""
+    """无法加载、预填或提交问卷页面时抛出。"""
 
+
+# ---------------------------------------------------------------------------
+# 轻量结果记录
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SubmitResult:
+    excel_row: int
+    success: bool
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# 单行预填 + 人工确认（原有功能，保持兼容）
+# ---------------------------------------------------------------------------
 
 @contextmanager
 def prefilled_browser(url: str, answer_row: AnswerRow) -> Iterator[Page]:
@@ -41,6 +58,222 @@ def prefilled_browser(url: str, answer_row: AnswerRow) -> Iterator[Page]:
             context.close()
             browser.close()
 
+
+# ---------------------------------------------------------------------------
+# 批量自动提交
+# ---------------------------------------------------------------------------
+
+def batch_submit(
+    url: str,
+    answer_rows: Sequence[AnswerRow],
+    *,
+    headless: bool = True,
+    delay: float = 2.0,
+) -> list[SubmitResult]:
+    """对 Excel 中每一行答案依次打开问卷、填写并自动提交。"""
+    if not answer_rows:
+        raise BrowserPreparationError("没有可提交的答案行。")
+
+    results: list[SubmitResult] = []
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(headless=headless)
+        except PlaywrightError as error:
+            raise BrowserPreparationError(
+                "未找到 Playwright Chromium。请运行：python -m playwright install chromium"
+            ) from error
+
+        try:
+            for index, answer_row in enumerate(answer_rows):
+                result = _submit_single(browser, url, answer_row)
+                results.append(result)
+                if index < len(answer_rows) - 1 and delay > 0:
+                    time.sleep(delay)
+        finally:
+            browser.close()
+
+    return results
+
+
+def _submit_single(browser, url: str, answer_row: AnswerRow) -> SubmitResult:
+    """提交单行答案，返回结果记录。"""
+    context = browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        _fill_answer_row(page, answer_row)
+        _submit_form(page)
+        return SubmitResult(
+            excel_row=answer_row.excel_row,
+            success=True,
+            message="提交成功",
+        )
+    except (PlaywrightError, BrowserPreparationError) as error:
+        return SubmitResult(
+            excel_row=answer_row.excel_row,
+            success=False,
+            message=str(error),
+        )
+    finally:
+        context.close()
+
+
+# ---------------------------------------------------------------------------
+# 提交逻辑
+# ---------------------------------------------------------------------------
+
+_SUBMIT_SELECTORS = [
+    "#submit_button",
+    "#submit",
+    "#Submit",
+    ".submit",
+    "#submitButton",
+    "button[type='submit']",
+    "a.submit",
+]
+
+_CONFIRM_BUTTON_SELECTORS = [
+    ".layui-layer-btn0",
+    ".modal-footer .btn-primary",
+    "button.btn-primary[data-btnclass]",
+    ".dialog-confirm .confirm",
+    "a.ui-btn-primary[data-role='confirm']",
+]
+
+_CONFIRM_TEXTS = ("确认提交", "确定提交", "确认", "确定")
+_SUCCESS_TEXTS = ("答卷成功", "问卷已提交", "提交成功", "已完成答题", "感谢您的填写")
+_ERROR_SELECTORS = [
+    ".errorMessage",
+    ".error_tip",
+    "#ErrorMessage",
+    ".layui-layer-content .error",
+]
+_CAPTCHA_HINTS = ("验证码", "滑动", "请拖动", "安全验证", "滑块")
+
+
+def _submit_form(page: Page) -> None:
+    """点击提交按钮，处理确认对话框，并等待结果页面。"""
+    # 先注册 dialog 拦截（问卷星可能弹出原生 confirm）
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    # 滚动到页面底部，确保提交按钮可见
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    time.sleep(0.3)
+
+    submit_btn = None
+    for selector in _SUBMIT_SELECTORS:
+        candidate = page.locator(selector)
+        if candidate.count():
+            submit_btn = candidate.first
+            break
+
+    if submit_btn is None:
+        # 尝试通过文本查找提交按钮
+        for text in ("提交", "submit", "Submit", "提交问卷"):
+            try:
+                candidate = page.get_by_role("button", name=text, exact=False)
+                if candidate.count():
+                    submit_btn = candidate.first
+                    break
+            except PlaywrightError:
+                continue
+            try:
+                candidate = page.locator(f"a:has-text('{text}')")
+                if candidate.count():
+                    submit_btn = candidate.first
+                    break
+            except PlaywrightError:
+                continue
+
+    if submit_btn is None:
+        raise BrowserPreparationError("未找到提交按钮。")
+
+    submit_btn.click()
+
+    # 等待弹窗渲染后处理确认按钮
+    time.sleep(0.5)
+    _try_click_confirm(page)
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+    except PlaywrightError:
+        pass
+
+    # 给结果页面一点渲染时间
+    time.sleep(1)
+    _check_result(page)
+
+
+def _try_click_confirm(page: Page) -> None:
+    """处理问卷星可能出现的页面内确认弹窗（非原生 dialog）。"""
+    # 先尝试 CSS class 选择器（精确匹配弹窗按钮）
+    for selector in _CONFIRM_BUTTON_SELECTORS:
+        confirm = page.locator(selector)
+        if confirm.count():
+            try:
+                confirm.first.click(timeout=3_000)
+                return
+            except PlaywrightError:
+                continue
+
+    # 再尝试文本匹配，但限制在可见的、可点击的按钮/链接范围内
+    for text in _CONFIRM_TEXTS:
+        candidates = [
+            ("button", page.locator(f"button:has-text('{text}')")),
+            ("a", page.locator(f"a:has-text('{text}')[role='button']")),
+        ]
+        for _, elements in candidates:
+            if elements.count() <= 2:  # 限制匹配数量，避免误匹配
+                try:
+                    elements.first.click(timeout=3_000)
+                    return
+                except PlaywrightError:
+                    continue
+
+
+def _check_result(page: Page) -> None:
+    """检查提交后页面是否出现成功标记或错误标记。"""
+    body_text = ""
+    try:
+        body_text = page.locator("body").inner_text(timeout=8_000)
+    except PlaywrightError:
+        pass
+
+    # 检测验证码拦截
+    for hint in _CAPTCHA_HINTS:
+        if hint in body_text:
+            raise BrowserPreparationError(f"提交被验证码拦截（包含「{hint}」），需人工处理。")
+
+    # 检测成功
+    for success_text in _SUCCESS_TEXTS:
+        if success_text in body_text:
+            return
+
+    # 通过 URL 判断：成功后通常会跳转到 wjx.cn 的结果页或带参数的感谢页
+    current_url = page.url
+    if "/wjx/result/" in current_url or "/result/" in current_url:
+        return
+    if "wjx.cn" not in current_url and "wjx.top" not in current_url:
+        raise BrowserPreparationError(f"提交后页面跳转至非预期地址：{current_url}")
+
+    # 检测错误提示元素
+    for selector in _ERROR_SELECTORS:
+        error_el = page.locator(selector)
+        if error_el.count():
+            error_text = ""
+            try:
+                error_text = error_el.first.text_content(timeout=3_000) or "未知错误"
+            except PlaywrightError:
+                error_text = "未知错误"
+            raise BrowserPreparationError(f"提交失败：{error_text}")
+
+    # 无法明确判断结果，保守地标记为失败
+    raise BrowserPreparationError("提交后未能确认结果，请手动检查问卷数据。")
+
+
+# ---------------------------------------------------------------------------
+# 预填辅助（原有逻辑不变）
+# ---------------------------------------------------------------------------
 
 def _fill_answer_row(page: Page, answer_row: AnswerRow) -> None:
     for answer in answer_row.answers:

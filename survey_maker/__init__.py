@@ -2,6 +2,7 @@
 
 from .excel import AnswerRow, AnswerValue, WorkbookValidationError, create_template, read_answer_rows
 from .wjx import Choice, Question, QuestionType, fetch_questions, parse_questions
+from .browser import BrowserPreparationError, SubmitResult, batch_submit, prefilled_browser
 
 __all__ = [
 	"AnswerRow",
@@ -10,8 +11,12 @@ __all__ = [
 	"Question",
 	"QuestionType",
 	"WorkbookValidationError",
+	"BrowserPreparationError",
+	"SubmitResult",
 	"create_template",
 	"fetch_questions",
 	"parse_questions",
+	"prefilled_browser",
+	"batch_submit",
 	"read_answer_rows",
 ]

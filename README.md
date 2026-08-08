@@ -1,8 +1,8 @@
 # Survey Maker
 
-该工具将已获授权的问卷星链接解析为 Excel 回答模板，并把指定的一行答案预填到一个可见浏览器中，供人工逐题核验。
+将已获授权的问卷星链接解析为 Excel 回答模板，支持人工预填核对或批量自动提交。
 
-它仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。它不会自动点击提交、处理验证码、规避平台控制或批量提交问卷。
+仅支持 `wjx.cn` 和 `wjx.top` 链接，以及单选、多选、下拉选择和文本题。工具不会处理验证码或规避平台限流。请在合法授权范围内使用。
 
 ## 安装
 
@@ -11,41 +11,142 @@ python -m pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
+## 命令一览
+
+| 命令 | 用途 |
+|------|------|
+| `inspect` | 解析问卷链接，列出题目和选项 |
+| `template` | 生成 Excel 回答模板（含 answers 和 question_guide 两个工作表）|
+| `validate` | 校验 Excel 中每一行答案是否合法 |
+| `prepare` | 在可见浏览器中预填单行答案，等待人工核对（不自动提交）|
+| `submit` | 批量自动提交 Excel 中的答案行 |
+
 ## 使用
 
-先查看脚本解析到的题目和选项：
+### inspect — 查看题目
 
 ```powershell
 python main.py inspect --url "https://v.wjx.cn/vm/your-form.aspx"
 ```
 
-生成 Excel 模板：
+### template — 生成 Excel 模板
 
 ```powershell
 python main.py template --url "https://v.wjx.cn/vm/your-form.aspx" --output "answers.xlsx"
 ```
 
-填写 `answers.xlsx` 后校验全部数据行：
+### validate — 校验答案
 
 ```powershell
 python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx"
 ```
 
-预填 Excel 第 2 行并在浏览器中人工核验：
+校验通过后可继续用 `prepare` 或 `submit`。
+
+### prepare — 人工预填单行
 
 ```powershell
 python main.py prepare --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --authorized
 ```
 
-`prepare` 打开的是可见浏览器。脚本只负责预填，不会提交；请人工核对每一题，并自行决定是否提交。关闭提示后浏览器会退出。
+打开可见浏览器，预填第 2 行答案。脚本只负责预填，不会点击提交；请人工逐题核对后自行决定是否提交。关闭提示后浏览器会退出。
+
+### submit — 批量自动提交
+
+**提交全部行：**
+
+```powershell
+python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
+```
+
+**仅提交指定行：**
+
+```powershell
+python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --row 5 --authorized
+```
+
+**以可见浏览器调试运行：**
+
+```powershell
+python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --no-headless --authorized
+```
+
+**自定义提交间隔（默认 2 秒）：**
+
+```powershell
+python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --delay 5 --authorized
+```
+
+**参数说明：**
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--url` | 问卷星链接（必填）| — |
+| `--excel` | 填写后的 .xlsx 文件路径（必填）| — |
+| `--row` | 仅提交指定行号，可多次使用；省略则提交全部 | 全部行 |
+| `--headless` | 无头模式运行浏览器 | 开启 |
+| `--no-headless` | 可见浏览器运行（调试用）| — |
+| `--delay` | 每次提交之间的间隔秒数 | 2.0 |
+| `--authorized` | 确认你拥有该问卷的测试或填写授权（必填）| — |
+
+**提交后行为：**
+
+- 依次为每行答案打开一个独立的浏览器上下文，填写并点击提交
+- 提交后检测页面是否存在成功标记（如"答卷成功"）、错误提示或验证码拦截
+- 逐行输出结果汇总（成功 / 失败 / 原因）
+- 遇到验证码时该行标记为失败，需人工处理
+- 全部成功返回退出码 0，有失败返回 1
 
 ## Excel 格式
 
-- `answers` 工作表第 1 行由脚本生成，必须保留为 `Q1`、`Q2`、`Q3`……，顺序与问卷题号一致。
-- 从第 2 行开始，每一行代表一份完整问卷答案；每一列对应同序号的一道题。
-- 单选和下拉题可填写完整选项文字、选项序号（从 1 开始）或选项值。
-- 多选题用英文分号 `;` 或中文分号 `；` 分隔多个选项，例如 `技术；设计`。
-- 文本题直接填写希望出现在输入框中的内容。
-- `question_guide` 工作表包含每道题的题干、题型、必填状态和可选答案。不要在这里录入作答数据。
+**`answers` 工作表：**
 
-每次预填前都会重新读取当前问卷并校验 Excel。如果问卷题目被修改，先重新生成模板，避免错位填写。
+- 第 1 行由脚本生成，必须保留为 `Q1`、`Q2`、`Q3`……顺序与问卷题号一致
+- 从第 2 行开始，每一行代表一份完整问卷答案
+- 每一列对应同序号的一道题
+
+**填写规则：**
+
+| 题型 | 填写方式 |
+|------|----------|
+| 单选 / 下拉选择 | 选项完整文字、选项序号（从 1 开始）或选项值 |
+| 多选 | 多个选项用英文分号 `;` 或中文分号 `；` 分隔，如 `技术；设计` |
+| 文本 | 直接填写希望出现在输入框中的内容 |
+| 暂不支持的题型 | 留空，在浏览器中手动填写 |
+
+**`question_guide` 工作表：**
+
+包含每道题的题干、题型、必填状态、可选答案和填写规则。不要在这里录入作答数据。
+
+> **提示：** 每次预填或提交前都会重新读取当前问卷并校验 Excel。如果问卷题目被修改，请先重新生成模板再填写，避免错位。
+
+## 项目结构
+
+```
+survey-maker/
+├── main.py                  # CLI 入口（5 个子命令）
+├── requirements.txt         # 依赖：openpyxl, playwright, requests
+├── survey_maker/
+│   ├── __init__.py          # 公共接口导出
+│   ├── wjx.py               # 问卷星 HTML 解析（标准库 HTMLParser，无第三方依赖）
+│   ├── excel.py             # Excel 模板生成 + 逐行答案校验（openpyxl）
+│   └── browser.py           # Playwright 浏览器预填 + 批量自动提交
+└── tests/
+    ├── test_wjx.py          # HTML 解析测试
+    ├── test_excel.py        # Excel 模板与校验测试
+    └── test_browser.py      # 浏览器预填测试（需 Playwright Chromium）
+```
+
+## 依赖
+
+- `openpyxl >= 3.1, < 4` — Excel 读写
+- `playwright >= 1.50, < 2` — 浏览器自动化
+- `requests >= 2.31, < 3` — 问卷页面抓取
+
+## 运行测试
+
+```powershell
+python -m pytest tests/ -v
+```
+
+浏览器测试需要 Playwright Chromium 已安装。未安装时会自动跳过。
