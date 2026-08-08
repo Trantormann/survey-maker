@@ -28,19 +28,19 @@ python -m playwright install chromium
 ### 1、查看题目
 
 ```powershell
-python main.py inspect --url "https://v.wjx.cn/vm/your-form.aspx"
+python -m survey_maker inspect --url "https://v.wjx.cn/vm/your-form.aspx"
 ```
 
 ### 2、生成 Excel 模板
 
 ```powershell
-python main.py template --url "https://v.wjx.cn/vm/your-form.aspx" --output "answers.xlsx"
+python -m survey_maker template --url "https://v.wjx.cn/vm/your-form.aspx" --output "answers.xlsx"
 ```
 
 ### 3、校验答案
 
 ```powershell
-python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx"
+python -m survey_maker validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx"
 ```
 
 `validate` 采用自动提交的严格规则；必填的暂不支持题型会直接报错，避免未填写完整的答卷进入批处理。
@@ -48,7 +48,7 @@ python main.py validate --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answ
 ### 4、批量提交
 
 ```powershell
-python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
+python -m survey_maker submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
 ```
 
 ## 其他操作
@@ -56,7 +56,7 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 ### prepare — 人工预填单行
 
 ```powershell
-python main.py prepare --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --authorized
+python -m survey_maker prepare --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --authorized
 ```
 
 打开可见浏览器，预填第 2 行答案。脚本只负责预填，不会点击提交；请人工逐题核对后自行决定是否提交。必填的暂不支持题型可保持 Excel 单元格为空，并在此浏览器中手动填写。关闭提示后浏览器会退出。
@@ -66,25 +66,25 @@ python main.py prepare --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answe
 **提交全部行：**
 
 ```powershell
-python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
+python -m survey_maker submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --authorized
 ```
 
 **仅提交指定行：**
 
 ```powershell
-python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --row 5 --authorized
+python -m survey_maker submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --row 2 --row 5 --authorized
 ```
 
 **以可见浏览器调试运行：**
 
 ```powershell
-python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --no-headless --authorized
+python -m survey_maker submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --no-headless --authorized
 ```
 
 **自定义提交间隔（默认 2 秒）：**
 
 ```powershell
-python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --delay 5 --authorized
+python -m survey_maker submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answers.xlsx" --delay 5 --authorized
 ```
 
 **参数说明：**
@@ -167,14 +167,16 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 survey-maker/
 ├── main.py                  # CLI 入口（5 个子命令）
 ├── requirements.txt         # 依赖：openpyxl, playwright, requests
-├── survey_maker/
+├── survey_maker/            # Python 包（下划线，符合 Python 包命名规范）
 │   ├── __init__.py          # 公共接口导出
+│   ├── __main__.py          # python -m survey_maker 入口
 │   ├── wjx.py               # 问卷星 HTML 解析（标准库 HTMLParser，无第三方依赖）
 │   ├── excel.py             # Excel 模板生成 + 逐行答案校验（openpyxl）
 │   └── browser.py           # Playwright 浏览器预填 + 批量自动提交
 └── tests/
     ├── test_wjx.py          # HTML 解析测试
     ├── test_excel.py        # Excel 模板与校验测试
+    ├── test_main.py         # CLI 参数与命令测试
     └── test_browser.py      # 浏览器预填测试（需 Playwright Chromium）
 ```
 

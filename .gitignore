@@ -4,3 +4,4 @@ __pycache__/
 playwright-report/
 test-results/
 answers.xlsx
+_probe*
