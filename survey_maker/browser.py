@@ -284,12 +284,86 @@ _HUMAN_LAUNCH_ARGS = [
 ]
 _HUMAN_VIEWPORT = {"width": 1366, "height": 768}
 _HUMAN_LOCALE = "zh-CN"
-# 移除 navigator.webdriver 标记，使页面检测脚本不易识别为自动化
-_STEALTH_INIT_SCRIPT = (
-    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-    "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
-    "Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});"
-)
+
+# 综合伪装脚本：覆盖 WebDriver、Canvas、WebGL、权限 API 等检测维度
+_STEALTH_INIT_SCRIPT = r"""
+(() => {
+    // 1. 移除 navigator.webdriver 标记
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+    // 2. 伪造插件列表（正常浏览器至少 3 个）
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            const arr = [
+                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeoexfofkobgkfhjgc', description: ''},
+                {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''}
+            ];
+            arr.item = i => arr[i] || null;
+            arr.namedItem = n => arr.find(p => p.name === n) || null;
+            arr.refresh = () => {};
+            return arr;
+        }
+    });
+
+    // 3. 伪造语言列表
+    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+
+    // 4. 伪造硬件信息
+    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+
+    // 5. 伪造 permissions API（headless 中 Notification.permission 可能异常）
+    if (!window.Notification) window.Notification = {permission: 'default', requestPermission: () => Promise.resolve('default')};
+    const origQuery = navigator.permissions && navigator.permissions.query;
+    if (navigator.permissions) {
+        navigator.permissions.query = (params) =>
+            params && params.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission, onchange: null})
+                : origQuery ? origQuery.call(navigator.permissions, params) : Promise.resolve({state: 'prompt'});
+    }
+
+    // 6. Canvas 指纹随机化：在 toDataURL / getImageData 中注入微小噪声
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+        try {
+            const ctx = this.getContext('2d');
+            if (ctx && this.width > 0 && this.height > 0) {
+                const imageData = ctx.getImageData(0, 0, this.width, this.height);
+                for (let i = 0; i < imageData.data.length; i += 4) {
+                    // 注入人眼不可见但可改变哈希的微小噪声
+                    imageData.data[i] ^= 1;
+                }
+                ctx.putImageData(imageData, 0, 0);
+            }
+        } catch(e) {}
+        return origToDataURL.apply(this, args);
+    };
+
+    // 7. WebGL 伪装：返回常见 GPU 信息
+    const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(param) {
+        // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
+        if (param === 0x9245) return 'Google Inc. (Intel)';
+        if (param === 0x9246) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)';
+        return getParameterOrig.call(this, param);
+    };
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParameter2Orig = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(param) {
+            if (param === 0x9245) return 'Google Inc. (Intel)';
+            if (param === 0x9246) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)';
+            return getParameter2Orig.call(this, param);
+        };
+    }
+
+    // 8. 伪造 chrome 对象（正常 Chrome 浏览器存在 window.chrome）
+    if (!window.chrome) {
+        window.chrome = {runtime: {}, app: {isInstalled: false}};
+    }
+})();
+"""
 
 
 def _launch_human_browser(playwright, *, headless: bool):
@@ -304,6 +378,56 @@ def _launch_human_browser(playwright, *, headless: bool):
             "未找到 Playwright Chromium。请运行：python -m playwright install chromium"
         ) from error
     return browser
+
+
+# ---------------------------------------------------------------------------
+# 拟人行为模拟：鼠标轨迹、点击节奏、打字节奏
+# ---------------------------------------------------------------------------
+
+def _human_mouse_move(page: Page, target_x: float, target_y: float) -> None:
+    """模拟真人鼠标移动：沿贝塞尔曲线从随机起点移动到目标位置。"""
+    try:
+        start_x = random.uniform(100, 800)
+        start_y = random.uniform(100, 500)
+        steps = random.randint(15, 30)
+        # 二次贝塞尔曲线控制点（在起点和终点之间偏移，制造弧线）
+        ctrl_x = (start_x + target_x) / 2 + random.uniform(-100, 100)
+        ctrl_y = (start_y + target_y) / 2 + random.uniform(-80, 80)
+        for i in range(1, steps + 1):
+            t = i / steps
+            # 二次贝塞尔曲线公式
+            x = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * ctrl_x + t ** 2 * target_x
+            y = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * ctrl_y + t ** 2 * target_y
+            page.mouse.move(x, y)
+            time.sleep(random.uniform(0.008, 0.025))
+    except PlaywrightError:
+        pass
+
+
+def _human_click(page: Page, locator: Locator, *, timeout: int = 5_000) -> None:
+    """模拟真人点击：先将鼠标移动到元素附近，再点击。"""
+    try:
+        box = locator.bounding_box()
+        if box:
+            target_x = box["x"] + box["width"] / 2 + random.uniform(-5, 5)
+            target_y = box["y"] + box["height"] / 2 + random.uniform(-3, 3)
+            _human_mouse_move(page, target_x, target_y)
+            time.sleep(random.uniform(0.05, 0.2))
+        locator.click(timeout=timeout)
+    except PlaywrightError:
+        locator.click(timeout=timeout)
+
+
+def _human_type(page: Page, locator: Locator, text: str) -> None:
+    """模拟真人打字：逐字符输入，每个字符间随机停顿。"""
+    try:
+        locator.click()
+        locator.fill("")  # 先清空
+        for char in text:
+            page.keyboard.type(char)
+            time.sleep(random.uniform(0.05, 0.18))
+    except PlaywrightError:
+        locator.fill(text)
 
 
 def _new_human_context(browser):
@@ -323,16 +447,16 @@ def _submit_form(page: Page) -> None:
     # 先注册 dialog 拦截（问卷星可能弹出原生 confirm）
     page.on("dialog", lambda dialog: dialog.accept())
 
-    # 滚动到页面底部，确保提交按钮可见
+    # 模拟真人滚动到页面底部
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    time.sleep(0.3)
+    time.sleep(random.uniform(0.5, 1.5))
 
     submit_btn = _find_submit_button(page)
 
     if submit_btn is None:
         raise BrowserPreparationError("未找到可见的提交按钮。请确认问卷已加载到最后一页。")
 
-    submit_btn.click()
+    _human_click(page, submit_btn)
 
     # 等待可能的确认弹窗（非 WJX 平台）
     time.sleep(0.5)
@@ -432,7 +556,7 @@ def _try_click_confirm(page: Page) -> None:
         confirm = page.locator(selector)
         if confirm.count():
             try:
-                confirm.first.click(timeout=3_000)
+                _human_click(page, confirm.first, timeout=3_000)
                 return
             except PlaywrightError:
                 continue
@@ -446,7 +570,7 @@ def _try_click_confirm(page: Page) -> None:
         for _, elements in candidates:
             if 0 < elements.count() <= 2:  # 限制匹配数量，避免误匹配
                 try:
-                    elements.first.click(timeout=3_000)
+                    _human_click(page, elements.first, timeout=3_000)
                     return
                 except PlaywrightError:
                     continue
@@ -517,6 +641,10 @@ def _fill_answer_row(
         if answer.text is None and not answer.choice_values:
             continue
 
+        # 题目间随机停顿，模拟真人阅读和思考时间
+        if question_position > 1:
+            time.sleep(random.uniform(0.8, 3.0))
+
         _report_progress(
             progress_callback,
             position=position,
@@ -533,7 +661,7 @@ def _fill_answer_row(
                 choice = choices_by_value.get(value)
                 if choice is None:
                     raise BrowserPreparationError(f"Q{question.number} 的答案选项已发生变化。")
-                _set_choice_selected(field, choice, selected=True)
+                _set_choice_selected(page, field, choice, selected=True)
         elif question.question_type == QuestionType.MULTIPLE_CHOICE:
             selected_values = set(answer.choice_values)
             known_values = {choice.value for choice in question.choices}
@@ -543,20 +671,20 @@ def _fill_answer_row(
                     f"Q{question.number} 的答案选项已发生变化：{', '.join(sorted(unknown_values))}。"
                 )
             for choice in question.choices:
-                _set_choice_selected(field, choice, selected=choice.value in selected_values)
+                _set_choice_selected(page, field, choice, selected=choice.value in selected_values)
         elif question.question_type == QuestionType.SELECT:
             select = field.locator("select").first
             select.select_option(value=answer.choice_values[0])
         elif question.question_type == QuestionType.TEXT and answer.text is not None:
-            _fill_text_answer(field, question, answer.text)
+            _fill_text_answer(page, field, question, answer.text)
 
 
-def _fill_text_answer(field: Locator, question: Question, text: str) -> None:
+def _fill_text_answer(page: Page, field: Locator, question: Question, text: str) -> None:
     text_control = field.locator(_TEXT_CONTROL_SELECTOR).first
     try:
         text_control.wait_for(state="visible", timeout=15_000)
         text_control.scroll_into_view_if_needed()
-        text_control.fill(text)
+        _human_type(page, text_control, text)
         is_contenteditable = text_control.get_attribute("contenteditable") == "true"
         if is_contenteditable:
             text_control.evaluate("element => element.blur()")
@@ -584,7 +712,7 @@ def _verify_hidden_text_value(field: Locator, question: Question, text: str) -> 
         raise BrowserPreparationError(f"Q{question.number} 的填空状态无法验证。") from error
 
 
-def _set_choice_selected(field: Locator, choice: Choice, *, selected: bool) -> None:
+def _set_choice_selected(page: Page, field: Locator, choice: Choice, *, selected: bool) -> None:
     """将一个单选或多选控件收敛到指定状态，并确认原生 input 已同步。"""
     input_selector = _id_selector(choice.input_id) if choice.input_id else _value_selector(choice.value)
     input_control = field.locator(input_selector).first
@@ -593,14 +721,14 @@ def _set_choice_selected(field: Locator, choice: Choice, *, selected: bool) -> N
         if input_control.is_checked() == selected:
             return
     except PlaywrightError as error:
-        raise BrowserPreparationError(f"选项“{choice.label or choice.value}”不可用。") from error
+        raise BrowserPreparationError(f'选项"{choice.label or choice.value}"不可用。') from error
 
     visual_control = field.locator(
         f"{input_selector} + .jqradio, {input_selector} + .jqcheck, {input_selector} + .jqcheckbox"
     )
     if visual_control.count():
         try:
-            visual_control.first.click(timeout=3_000)
+            _human_click(page, visual_control.first, timeout=3_000)
         except PlaywrightError:
             pass
 

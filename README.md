@@ -121,9 +121,20 @@ python main.py submit --url "https://v.wjx.cn/vm/your-form.aspx" --excel "answer
 **拟人浏览器特征（内置）：**
 
 - 启动时添加 `--disable-blink-automation` 参数，隐藏 Chromium 自动化标记
-- 移除 `navigator.webdriver` 属性，使页面检测脚本不易识别为自动化
-- 设置常见中文用户视口（1366×768）、语言环境（zh-CN）和插件列表
+- 移除 `navigator.webdriver` 属性，伪造 `plugins`、`languages`、`hardwareConcurrency`、`platform` 等 navigator 属性
+- Canvas 指纹随机化：在 `toDataURL` 中注入微小像素噪声，使每次指纹哈希不同
+- WebGL 伪装：返回常见 GPU 信息（Intel UHD Graphics 630），避免暴露虚拟化环境
+- 伪造 `window.chrome` 对象和 Permissions API，使检测脚本无法通过这些维度识别自动化
+- 设置常见中文用户视口（1366×768）、语言环境（zh-CN）
 - 以上措施仅降低被误判为机器人的概率，不保证完全规避平台检测
+
+**拟人行为模拟（内置）：**
+
+- 鼠标移动沿贝塞尔曲线轨迹，模拟真人手部运动轨迹（非直线瞬移）
+- 点击前先将鼠标移动到目标元素附近，加入随机偏移和短暂停顿
+- 文本题逐字符输入，每个字符间随机停顿 50–180ms，模拟真人打字节奏
+- 题目间随机停顿 0.8–3.0 秒，模拟阅读和思考时间
+- 提交前随机滚动并停顿 0.5–1.5 秒，模拟最终检查行为
 
 ## Excel 格式
 
